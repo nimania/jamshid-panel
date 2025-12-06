@@ -4,9 +4,9 @@ import gspread
 from google.oauth2.service_account import Credentials
 import feedparser
 import yt_dlp
-import re
+import requests # ابزار تماس مستقیم
+import json
 from datetime import datetime
-import google.generativeai as genai
 
 st.set_page_config(page_title="Jamshid Panel", page_icon="👑", layout="wide")
 
@@ -27,45 +27,41 @@ def connect_to_db():
 
 sh = connect_to_db()
 
-# --- 2. اتصال به هوش مصنوعی (حالت امن) ---
-try:
-    genai.configure(api_key=st.secrets["gemini"]["api_key"])
-    # استفاده از مدل استاندارد که همه جا کار می‌کند
-    model = genai.GenerativeModel('gemini-pro') 
-except Exception as e:
-    st.warning(f"⚠️ هوش مصنوعی وصل نشد: {e}")
-
-# --- 3. توابع کمکی ---
-def generate_script(text, project_type):
-    if not text: return "متنی برای پردازش وجود ندارد."
+# --- 2. تابع تماس مستقیم با جمینای (REST API) ---
+def generate_script_direct(text, project_type):
+    if not text: return "متنی وجود ندارد."
     
-    # محدود کردن متن برای جلوگیری از خطای طولانی بودن (Token Limit)
-    safe_text = text[:12000] 
+    api_key = st.secrets["gemini"]["api_key"]
+    # استفاده از مدل فلش (سریع و رایگان)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     
+    # ساختن پرامت
     if project_type == "پاورقی (سریال ترکی)":
-        prompt = f"""
-        به عنوان یک نویسنده یوتیوب، متن زیر (بخشی از سریال) را به یک سناریوی جذاب "پاورقی" تبدیل کن.
-        لحن: صمیمی و داستان‌گو.
-        ساختار: مقدمه جذاب، ۳ اتفاق اصلی، نتیجه‌گیری.
-        
-        متن:
-        {safe_text} 
-        """
-    else: 
-        prompt = f"""
-        به عنوان تحلیلگر، "جان کلام" متن زیر را استخراج کن.
-        خروجی: خلاصه، ۳ نکته کلیدی، تحلیل آینده.
-        
-        متن:
-        {safe_text}
-        """
+        system_instruction = "تو یک نویسنده خلاق یوتیوب هستی. متن زیرنویس سریال را به یک سناریوی جذاب، داستان‌گو و صمیمی به زبان فارسی تبدیل کن. سه بخش: شروع، اتفاقات اصلی، پایان."
+    else:
+        system_instruction = "تو یک تحلیلگر سیاسی هستی. جان کلام متن زیر را استخراج کن: خلاصه، ۳ نکته کلیدی، نتیجه‌گیری."
+
+    payload = {
+        "contents": [{
+            "parts": [{"text": f"{system_instruction}\n\nمتن ورودی:\n{text[:15000]}"}]
+        }]
+    }
     
     try:
-        response = model.generate_content(prompt)
-        return response.text
+        # ارسال درخواست مستقیم
+        response = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload)
+        
+        if response.status_code == 200:
+            result = response.json()
+            # استخراج متن از پاسخ پیچیده گوگل
+            return result['candidates'][0]['content']['parts'][0]['text']
+        else:
+            return f"خطای گوگل ({response.status_code}): {response.text}"
+            
     except Exception as e:
-        return f"خطا در تولید محتوا: {e}\n(ممکن است متن خیلی طولانی باشد یا API Key محدودیت داشته باشد)"
+        return f"خطای ارتباط: {e}"
 
+# --- 3. توابع کمکی ---
 def fetch_rss_feed(rss_url):
     try:
         feed = feedparser.parse(rss_url)
@@ -121,38 +117,34 @@ with tab_video:
             else: st.error("متن یا لینک معتبر وارد کنید.")
 
     st.divider()
-    st.header("۲. اتاق نویسندگان (AI) ✍️")
+    st.header("۲. اتاق نویسندگان (AI مستقیم) ✍️")
     
     try:
         ws_vid = sh.worksheet("Video_Factory")
         df_vid = pd.DataFrame(ws_vid.get_all_records())
         
         if not df_vid.empty:
-            # فقط پروژه‌هایی که هنوز انجام نشده‌اند را نشان بده
-            # اگر ستون Script خالی بود
             pending = df_vid[df_vid['Script'] == ""].reset_index()
-            
             if not pending.empty:
                 sel_idx = st.selectbox("انتخاب پروژه:", pending.index, format_func=lambda x: f"{pending.loc[x, 'Project_Name']}")
                 sel_row = pending.loc[sel_idx]
                 
                 if st.button("✨ نوشتن سناریو"):
-                    with st.spinner("جمشید در حال نوشتن..."):
-                        # استفاده از ستون متن زیرنویس
-                        text_to_process = sel_row['Subtitle_Text']
-                        res = generate_script(text_to_process, "پاورقی (سریال ترکی)")
+                    with st.spinner("جمشید در حال نوشتن (ارتباط مستقیم)..."):
+                        # استفاده از تابع جدید مستقیم
+                        res = generate_script_direct(sel_row['Subtitle_Text'], "پاورقی (سریال ترکی)")
                         
                         if "خطا" not in res:
                             cell = ws_vid.find(sel_row['Project_Name'])
-                            ws_vid.update_cell(cell.row, 4, res) # ذخیره سناریو
-                            ws_vid.update_cell(cell.row, 6, "Done") # تغییر وضعیت
+                            ws_vid.update_cell(cell.row, 4, res)
+                            ws_vid.update_cell(cell.row, 6, "Script Done")
                             st.success("تمام شد!")
                             st.text_area("خروجی:", res, height=300)
                             st.rerun()
                         else: st.error(res)
             else: st.info("پروژه جدیدی نیست.")
         st.dataframe(df_vid, use_container_width=True)
-    except: pass
+    except Exception as e: st.write(f"وضعیت: {e}")
 
 with tab_config:
     try: st.dataframe(pd.DataFrame(sh.worksheet("Config").get_all_records()))
