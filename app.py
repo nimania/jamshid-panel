@@ -27,42 +27,47 @@ def connect_to_db():
 
 sh = connect_to_db()
 
-# --- 2. اتصال به هوش مصنوعی (اصلاح شده) ---
+# --- 2. اتصال به Gemini 1.5 Pro ---
 try:
     genai.configure(api_key=st.secrets["gemini"]["api_key"])
-    # تغییر مهم: استفاده از مدل جدید فلش که هم سریع‌تر است هم در دسترس
-    model = genai.GenerativeModel('gemini-1.5-flash') 
+    # استفاده از قدرتمندترین مدل موجود
+    model = genai.GenerativeModel('gemini-1.5-pro') 
 except Exception as e:
     st.warning(f"⚠️ هوش مصنوعی وصل نشد: {e}")
 
 # --- 3. توابع کمکی ---
 def generate_script(text, project_type):
-    """تولید سناریو با هوش مصنوعی"""
+    if not text: return "متنی برای پردازش وجود ندارد."
+    
     if project_type == "پاورقی (سریال ترکی)":
         prompt = f"""
-        نقش تو یک نویسنده خلاق برای کانال یوتیوب است.
-        متن زیر، زیرنویس یک قسمت از سریال ترکی است.
-        لطفا آن را به یک متن جذاب و روایی (Storytelling) برای ویدئوی "پاورقی" تبدیل کن.
-        - لحن: صمیمی، کمی هیجانی و داستان‌گو.
-        - ساختار: آن را به ۳ بخش کوتاه تقسیم کن که هر کدام یک اتفاق مهم را روایت کند.
-        - خروجی باید کاملا فارسی باشد.
+        نقش تو یک نویسنده خلاق و داستان‌گو برای کانال یوتیوب است.
+        ورودی زیر، متن خام یا زیرنویس یک سریال است.
+        آن را به یک سناریوی ویدئویی جذاب "پاورقی" تبدیل کن.
+        
+        دستورالعمل‌ها:
+        1. لحن: صمیمی، ایرانی‌پسند، کمی طنزآمیز و کنجکاو کننده.
+        2. ساختار: مقدمه (قلاب)، بدنه داستان (3 اتفاق مهم)، و پایان‌بندی (نتیجه‌گیری).
+        3. زبان: فارسی روان و محاوره.
         
         متن ورودی:
-        {text[:15000]} 
+        {text[:25000]} 
         """
-    else: # جان کلام
+    else: 
         prompt = f"""
-        نقش تو یک تحلیل‌گر سیاسی/اجتماعی تیزبین است.
-        متن زیر را بخوان و "جان کلام" (نکات کلیدی و تحلیلی) آن را استخراج کن.
-        - لحن: جدی، تحلیلی و روشن.
-        - خروجی باید شامل: ۱. خلاصه مدیریتی ۲. سه نکته طلایی ۳. نتیجه‌گیری باشد.
+        نقش تو یک تحلیل‌گر استراتژیک است.
+        متن زیر را بخوان و "جان کلام" را استخراج کن.
+        خروجی باید شامل: خلاصه مدیریتی، ۳ نکته کلیدی، و تحلیل اثرات آینده باشد.
         
         متن ورودی:
-        {text[:15000]}
+        {text[:25000]}
         """
     
-    response = model.generate_content(prompt)
-    return response.text
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"خطا در تولید: {e}"
 
 def fetch_rss_feed(rss_url):
     try:
@@ -75,16 +80,15 @@ def download_transcript_heavy(url):
         ydl_opts = {'skip_download': True, 'writesubtitles': True, 'writeautomaticsub': True, 'subtitleslangs': ['fa','en','tr'], 'quiet': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            if 'subtitles' in info and info['subtitles']: return "زیرنویس رسمی یافت شد."
+            if 'subtitles' in info and info['subtitles']: return "زیرنویس یافت شد."
             if 'automatic_captions' in info: return "زیرنویس اتوماتیک یافت شد."
         return None
     except: return None
 
 # --- 4. رابط کاربری ---
-st.title("👑 اتاق فرمان جمشید")
+st.title("👑 اتاق فرمان جمشید (مجهز به Gemini 1.5 Pro)")
 tab_news, tab_video, tab_config = st.tabs(["📰 اتاق خبر", "🎬 کارخانه ویدئو", "⚙️ تنظیمات"])
 
-# تب اخبار
 with tab_news:
     if st.button("🔄 بروزرسانی اخبار"):
         ws_conf = sh.worksheet("Config")
@@ -99,69 +103,52 @@ with tab_news:
     try: st.dataframe(pd.DataFrame(sh.worksheet("News_Feed").get_all_records()), use_container_width=True)
     except: pass
 
-# تب ویدئو
 with tab_video:
-    st.header("۱. دریافت ورودی")
+    st.header("۱. ورودی")
     with st.form("input_form"):
         col1, col2 = st.columns([3, 1])
         with col1:
             v_url = st.text_input("لینک یوتیوب:")
-            manual = st.text_area("متن دستی (اگر لینک کار نکرد):", height=100)
+            manual = st.text_area("متن دستی:", height=100)
         with col2:
             p_name = st.text_input("نام پروژه:")
             p_type = st.selectbox("نوع:", ["پاورقی (سریال ترکی)", "جان کلام (تحلیلی)"])
             voice = st.selectbox("صدا:", ["Nima (Clone)", "Adam"])
         
-        if st.form_submit_button("ثبت اولیه"):
+        if st.form_submit_button("ثبت"):
             sub_text = manual if manual else (download_transcript_heavy(v_url) if v_url else "")
             if sub_text:
                 sh.worksheet("Video_Factory").append_row([p_name, v_url, sub_text, "", voice, "Ready for AI", ""])
-                st.success("پروژه ثبت شد!")
+                st.success("ثبت شد!")
                 st.rerun()
             else: st.error("متن یا لینک معتبر وارد کنید.")
 
     st.divider()
-    st.header("۲. اتاق نویسندگان (AI) ✍️")
+    st.header("۲. اتاق نویسندگان (Gemini Pro) 🧠")
     
     try:
         ws_vid = sh.worksheet("Video_Factory")
         df_vid = pd.DataFrame(ws_vid.get_all_records())
         
         if not df_vid.empty:
-            pending_projects = df_vid[df_vid['Script'] == ""].reset_index()
-            
-            if not pending_projects.empty:
-                selected_idx = st.selectbox("انتخاب پروژه برای نوشتن:", pending_projects.index, format_func=lambda x: f"{pending_projects.loc[x, 'Project_Name']}")
-                selected_row = pending_projects.loc[selected_idx]
-                
-                st.info(f"پروژه: {selected_row['Project_Name']}")
+            pending = df_vid[df_vid['Script'] == ""].reset_index()
+            if not pending.empty:
+                sel_idx = st.selectbox("انتخاب پروژه:", pending.index, format_func=lambda x: f"{pending.loc[x, 'Project_Name']}")
+                sel_row = pending.loc[sel_idx]
                 
                 if st.button("✨ نوشتن سناریو"):
-                    with st.spinner("جمشید در حال نوشتن..."):
-                        try:
-                            # اجرای هوش مصنوعی
-                            script_result = generate_script(selected_row['Subtitle_Text'], "پاورقی (سریال ترکی)")
-                            
-                            # پیدا کردن شماره ردیف در گوگل شیت
-                            # نکته: چون اندیس پانداز از 0 شروع میشه ولی شیت از 2 (ردیف اول هدر)، باید محاسبه کنیم
-                            # یک راه مطمئن‌تر، استفاده از find است
-                            cell = ws_vid.find(selected_row['Project_Name'])
-                            
-                            # ستون 4 = Script، ستون 6 = Status
-                            ws_vid.update_cell(cell.row, 4, script_result)
+                    with st.spinner("جمشید (1.5 Pro) در حال نوشتن..."):
+                        res = generate_script(sel_row['Subtitle_Text'], "پاورقی (سریال ترکی)")
+                        if "خطا" not in res:
+                            cell = ws_vid.find(sel_row['Project_Name'])
+                            ws_vid.update_cell(cell.row, 4, res)
                             ws_vid.update_cell(cell.row, 6, "Script Done")
-                            
-                            st.success("سناریو آماده شد! 🎉")
-                            st.text_area("خروجی:", script_result, height=300)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"خطا: {e}")
-            else:
-                st.info("همه پروژه‌ها سناریو دارند.")
-        
+                            st.success("تمام شد!")
+                            st.text_area("خروجی:", res, height=300)
+                        else: st.error(res)
+            else: st.info("همه پروژه‌ها انجام شده‌اند.")
         st.dataframe(df_vid, use_container_width=True)
-    except Exception as e:
-        st.write("هنوز پروژه‌ای نیست.")
+    except: pass
 
 with tab_config:
     try: st.dataframe(pd.DataFrame(sh.worksheet("Config").get_all_records()))
