@@ -16,6 +16,10 @@ import time
 from bs4 import BeautifulSoup
 import re
 
+# غیرفعال کردن اخطارهای امنیتی SSL برای سایت‌های ایرانی
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # --- تنظیمات ---
 st.set_page_config(page_title="Jamshid Panel", page_icon="👑", layout="wide")
 
@@ -115,7 +119,7 @@ def get_elevenlabs_voices():
 # --- توابع شکارچی منبع ---
 def find_rss_link(url):
     try:
-        r = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        r = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}, verify=False)
         soup = BeautifulSoup(r.text, 'html.parser')
         rss_link = soup.find('link', type='application/rss+xml')
         if rss_link: return rss_link.get('href')
@@ -128,7 +132,7 @@ def fetch_youtube_channel_rss(url):
     try:
         if "feeds/videos.xml" in url: return url
         cookies = {'CONSENT': 'YES+'}
-        r = requests.get(url, cookies=cookies, headers={'User-Agent': 'Mozilla/5.0'})
+        r = requests.get(url, cookies=cookies, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
         match = re.search(r'"channelId":"(UC[\w-]+)"', r.text)
         if match: return f"https://www.youtube.com/feeds/videos.xml?channel_id={match.group(1)}"
         return find_rss_link(url)
@@ -141,10 +145,11 @@ def detect_and_add_source(url, name):
     final_value = clean_url
     message = ""
 
+    # RSS مستقیم
     is_direct_rss = False
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(clean_url, headers=headers, timeout=5)
+        r = requests.get(clean_url, headers=headers, timeout=5, verify=False)
         f = feedparser.parse(r.content)
         if len(f.entries) > 0 or f.version: is_direct_rss = True
     except: pass
@@ -173,35 +178,33 @@ def detect_and_add_source(url, name):
         rss = find_rss_link(clean_url)
         if rss:
             source_type = "RSS"
-            final_value = f"{clean_url.rstrip('/')}{rss}" if rss.startswith("/") else rss
-            message = "✅ RSS سایت پیدا شد."
-        else: message = "ℹ️ RSS پیدا نشد (وب‌سایت معمولی)."
+            # هندل کردن لینک‌های نسبی (مثلاً /feed)
+            if rss.startswith("/"):
+                # حذف اسلش آخر دامنه برای جلوگیری از دوتایی شدن
+                base = clean_url.rstrip('/')
+                final_value = f"{base}{rss}"
+            else:
+                final_value = rss
+            message = "✅ RSS در صفحه سایت پیدا شد."
+        else:
+            message = "ℹ️ RSS پیدا نشد (وب‌سایت معمولی)."
 
     sh.worksheet("Config").append_row([source_type, name, final_value, ""])
     return message
 
-# --- توابع خبرخوان (با پروکسی هوشمند) ---
+# --- توابع خبرخوان (قدرتمند و ضد فیلتر) ---
 def fetch_website_meta(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        r = requests.get(url, headers=headers, timeout=10)
+        r = requests.get(url, headers=headers, timeout=10, verify=False)
         soup = BeautifulSoup(r.text, 'html.parser')
         title = soup.title.string if soup.title else url
-        # اگر سایت خبری بود، لینک‌های داخلش را هم بگیریم
-        links = []
-        for a in soup.find_all('a', href=True):
-            if len(a.text) > 20: # احتمالا تیتر خبر است
-                full_link = a['href'] if a['href'].startswith('http') else url.rstrip('/') + a['href']
-                links.append([datetime.now().strftime("%Y-%m-%d %H:%M"), "Website", a.text.strip(), full_link, "New"])
-                if len(links) >= 5: break
-        if not links:
-            return [[datetime.now().strftime("%Y-%m-%d %H:%M"), "Website", title, url, "New"]]
-        return links
+        return [[datetime.now().strftime("%Y-%m-%d %H:%M"), "Website", title, url, "New"]]
     except: return []
 
 def scrape_telegram_channel(url):
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(url, timeout=10, verify=False)
         soup = BeautifulSoup(r.text, 'html.parser')
         msgs = soup.find_all('div', class_='tgme_widget_message_wrap')
         res = []
@@ -215,43 +218,46 @@ def scrape_telegram_channel(url):
     except: return []
 
 def fetch_rss_feed(rss_url):
-    """خبرخوان ۳ مرحله‌ای (مستقیم -> پروکسی -> خطا)"""
+    """خبرخوان ۳ مرحله‌ای (واسطه -> مستقیم -> هدر جعلی)"""
     items = []
     
-    # روش ۱: مستقیم با هدر مرورگر
+    # 1. اولویت اول: استفاده از سرویس واسط RSS2JSON (برای دور زدن فیلتر IP)
+    # این روش برای دیجیاتو و سایت‌های ایرانی عالی کار می‌کند
+    try:
+        proxy_api = f"https://api.rss2json.com/v1/api.json?rss_url={rss_url}"
+        r = requests.get(proxy_api, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if data['status'] == 'ok':
+                feed_title = data['feed'].get('title', 'Unknown')
+                for item in data['items'][:5]:
+                    pub = item.get('pubDate', datetime.now().strftime("%Y-%m-%d %H:%M"))
+                    items.append([pub, feed_title, item.get('title'), item.get('link'), "New"])
+                return items
+    except: pass
+
+    # 2. اولویت دوم: مستقیم با هدر کروم (اگر اولی نشد)
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept': 'application/rss+xml, application/xml, text/xml, */*'
         }
-        response = requests.get(rss_url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            feed = feedparser.parse(response.content)
-            if len(feed.entries) > 0:
-                for entry in feed.entries[:5]:
-                    pub_date = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    if 'published' in entry: pub_date = entry.published[:20]
-                    items.append([pub_date, feed.feed.get('title', 'Unknown'), entry.get('title', 'No Title'), entry.get('link', ''), "New"])
-                return items
-    except: pass
-
-    # روش ۲: استفاده از پروکسی RSS2JSON (برای دور زدن تحریم)
-    try:
-        # این سرویس واسط، فید را می‌گیرد و به JSON تبدیل می‌کند
-        proxy_url = f"https://api.rss2json.com/v1/api.json?rss_url={rss_url}"
-        r = requests.get(proxy_url, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            if 'items' in data:
-                for entry in data['items'][:5]:
-                    items.append([
-                        entry.get('pubDate', datetime.now().strftime("%Y-%m-%d %H:%M")),
-                        data.get('feed', {}).get('title', 'Unknown'),
-                        entry.get('title', 'No Title'),
-                        entry.get('link', ''),
-                        "New"
-                    ])
-                return items
+        # verify=False برای نادیده گرفتن خطای SSL سایت‌های ایرانی
+        response = requests.get(rss_url, headers=headers, timeout=10, verify=False)
+        feed = feedparser.parse(response.content)
+        
+        if len(feed.entries) > 0:
+            for entry in feed.entries[:5]:
+                pub_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+                if 'published' in entry: pub_date = entry.published[:20]
+                items.append([
+                    pub_date,
+                    feed.feed.get('title', 'Unknown'),
+                    entry.get('title', 'No Title'),
+                    entry.get('link', ''),
+                    "New"
+                ])
+            return items
     except: pass
 
     return []
