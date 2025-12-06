@@ -4,7 +4,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import feedparser
 import yt_dlp
-import requests # ابزار تماس مستقیم
+from openai import OpenAI
 import json
 from datetime import datetime
 
@@ -27,39 +27,29 @@ def connect_to_db():
 
 sh = connect_to_db()
 
-# --- 2. تابع تماس مستقیم با جمینای (REST API) ---
-def generate_script_direct(text, project_type):
+# --- 2. تابع نویسنده (ChatGPT) ---
+def generate_script_gpt(text, project_type):
     if not text: return "متنی وجود ندارد."
     
-    api_key = st.secrets["gemini"]["api_key"]
-    # استفاده از مدل فلش (سریع و رایگان)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-    
-    # ساختن پرامت
-    if project_type == "پاورقی (سریال ترکی)":
-        system_instruction = "تو یک نویسنده خلاق یوتیوب هستی. متن زیرنویس سریال را به یک سناریوی جذاب، داستان‌گو و صمیمی به زبان فارسی تبدیل کن. سه بخش: شروع، اتفاقات اصلی، پایان."
-    else:
-        system_instruction = "تو یک تحلیلگر سیاسی هستی. جان کلام متن زیر را استخراج کن: خلاصه، ۳ نکته کلیدی، نتیجه‌گیری."
-
-    payload = {
-        "contents": [{
-            "parts": [{"text": f"{system_instruction}\n\nمتن ورودی:\n{text[:15000]}"}]
-        }]
-    }
-    
     try:
-        # ارسال درخواست مستقیم
-        response = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload)
+        client = OpenAI(api_key=st.secrets["openai"]["api_key"])
         
-        if response.status_code == 200:
-            result = response.json()
-            # استخراج متن از پاسخ پیچیده گوگل
-            return result['candidates'][0]['content']['parts'][0]['text']
+        if project_type == "پاورقی (سریال ترکی)":
+            system_msg = "تو یک نویسنده خلاق یوتیوب هستی. متن زیرنویس را به یک سناریوی فارسی جذاب، داستان‌گو و صمیمی (Storytelling) تبدیل کن. ساختار: مقدمه (قلاب)، بدنه داستان (۳ اتفاق مهم)، پایان‌بندی."
         else:
-            return f"خطای گوگل ({response.status_code}): {response.text}"
-            
+            system_msg = "تو یک تحلیلگر سیاسی استراتژیک هستی. جان کلام متن زیر را استخراج کن: خلاصه مدیریتی، ۳ نکته کلیدی، نتیجه‌گیری و پیش‌بینی آینده."
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini", # مدل سریع و ارزان (یا gpt-3.5-turbo)
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": f"متن ورودی:\n{text[:15000]}"}
+            ],
+            temperature=0.7
+        )
+        return response.choices[0].message.content
     except Exception as e:
-        return f"خطای ارتباط: {e}"
+        return f"خطای OpenAI: {e}"
 
 # --- 3. توابع کمکی ---
 def fetch_rss_feed(rss_url):
@@ -79,7 +69,7 @@ def download_transcript_heavy(url):
     except: return None
 
 # --- 4. رابط کاربری ---
-st.title("👑 اتاق فرمان جمشید")
+st.title("👑 اتاق فرمان جمشید (موتور OpenAI)")
 tab_news, tab_video, tab_config = st.tabs(["📰 اتاق خبر", "🎬 کارخانه ویدئو", "⚙️ تنظیمات"])
 
 with tab_news:
@@ -111,28 +101,35 @@ with tab_video:
         if st.form_submit_button("ثبت"):
             sub_text = manual if manual else (download_transcript_heavy(v_url) if v_url else "")
             if sub_text:
-                sh.worksheet("Video_Factory").append_row([p_name, v_url, sub_text, "", voice, "Ready for AI", ""])
+                final_name = p_name if p_name.strip() else f"پروژه {datetime.now().strftime('%H:%M:%S')}"
+                sh.worksheet("Video_Factory").append_row([final_name, v_url, sub_text, "", voice, "Ready for AI", ""])
                 st.success("ثبت شد!")
                 st.rerun()
             else: st.error("متن یا لینک معتبر وارد کنید.")
 
     st.divider()
-    st.header("۲. اتاق نویسندگان (AI مستقیم) ✍️")
+    st.header("۲. اتاق نویسندگان (ChatGPT) ✍️")
     
     try:
         ws_vid = sh.worksheet("Video_Factory")
         df_vid = pd.DataFrame(ws_vid.get_all_records())
         
         if not df_vid.empty:
+            # فیلتر کردن پروژه‌های ناتمام
             pending = df_vid[df_vid['Script'] == ""].reset_index()
+            
             if not pending.empty:
-                sel_idx = st.selectbox("انتخاب پروژه:", pending.index, format_func=lambda x: f"{pending.loc[x, 'Project_Name']}")
+                # اصلاح باگ نمایش سفید: اگر اسم خالی بود، یک اسم موقت نشان بده
+                def get_label(x):
+                    name = str(pending.loc[x, 'Project_Name']).strip()
+                    return name if name else f"پروژه بدون نام (ردیف {x+1})"
+
+                sel_idx = st.selectbox("انتخاب پروژه:", pending.index, format_func=get_label)
                 sel_row = pending.loc[sel_idx]
                 
                 if st.button("✨ نوشتن سناریو"):
-                    with st.spinner("جمشید در حال نوشتن (ارتباط مستقیم)..."):
-                        # استفاده از تابع جدید مستقیم
-                        res = generate_script_direct(sel_row['Subtitle_Text'], "پاورقی (سریال ترکی)")
+                    with st.spinner("ChatGPT در حال نوشتن..."):
+                        res = generate_script_gpt(sel_row['Subtitle_Text'], "پاورقی (سریال ترکی)")
                         
                         if "خطا" not in res:
                             cell = ws_vid.find(sel_row['Project_Name'])
@@ -142,7 +139,7 @@ with tab_video:
                             st.text_area("خروجی:", res, height=300)
                             st.rerun()
                         else: st.error(res)
-            else: st.info("پروژه جدیدی نیست.")
+            else: st.info("پروژه جدیدی برای نوشتن نیست.")
         st.dataframe(df_vid, use_container_width=True)
     except Exception as e: st.write(f"وضعیت: {e}")
 
