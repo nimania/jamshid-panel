@@ -49,7 +49,7 @@ def connect_to_db():
 
 sh = connect_to_db()
 
-# --- 2. توابع هوشمند ---
+# --- 2. توابع هوشمند (AI & Media) ---
 def generate_script_gpt(text, project_type, custom_prompt=""):
     if not text: return "متنی وجود ندارد."
     try:
@@ -112,38 +112,112 @@ def get_elevenlabs_voices():
     except: pass
     return voices
 
-# --- توابع خبرخوان (پیشرفته) ---
-def fetch_youtube_channel_rss(channel_url):
-    """تبدیل لینک کانال یوتیوب به RSS"""
-    # تلاش برای یافتن Channel ID از سورس صفحه
+# --- توابع شکارچی منبع (Source Hunters) ---
+def find_rss_link(url):
+    """جستجوی لینک RSS در کدهای صفحه"""
     try:
-        cookies = {'CONSENT': 'YES+'}
-        r = requests.get(channel_url, cookies=cookies, headers={'User-Agent': 'Mozilla/5.0'})
-        match = re.search(r'channelId":"(.*?)"', r.text)
-        if match:
-            cid = match.group(1)
-            return f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}"
+        r = requests.get(url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
+        soup = BeautifulSoup(r.text, 'html.parser')
+        rss_link = soup.find('link', type='application/rss+xml')
+        if rss_link: return rss_link.get('href')
+        atom_link = soup.find('link', type='application/atom+xml')
+        if atom_link: return atom_link.get('href')
     except: pass
     return None
 
-def scrape_telegram_channel(channel_username):
-    """خواندن آخرین پست‌های کانال تلگرام (نمای عمومی)"""
-    url = f"https://t.me/s/{channel_username}"
+def fetch_youtube_channel_rss(url):
+    """تبدیل پیشرفته لینک کانال یوتیوب به RSS"""
+    try:
+        # اگر خودش لینک RSS بود
+        if "feeds/videos.xml" in url: return url
+        
+        # استخراج Channel ID
+        cookies = {'CONSENT': 'YES+'}
+        r = requests.get(url, cookies=cookies, headers={'User-Agent': 'Mozilla/5.0'})
+        
+        # روش 1: پیدا کردن channelId در متادیتا
+        match = re.search(r'"channelId":"(UC[\w-]+)"', r.text)
+        if match:
+            return f"https://www.youtube.com/feeds/videos.xml?channel_id={match.group(1)}"
+        
+        # روش 2: جستجوی لینک RSS در هدر
+        return find_rss_link(url)
+    except: pass
+    return None
+
+def detect_and_add_source(url, name):
+    """مغز متفکر شناسایی منبع"""
+    clean_url = url.strip()
+    source_type = "Website" # پیش‌فرض
+    final_value = clean_url
+    message = ""
+
+    # 1. یوتیوب
+    if "youtube.com" in clean_url or "youtu.be" in clean_url:
+        rss = fetch_youtube_channel_rss(clean_url)
+        if rss:
+            source_type = "Youtube_Channel"
+            final_value = rss
+            message = "✅ کانال یوتیوب شناسایی شد (RSS استخراج شد)."
+        else:
+            message = "⚠️ لینک یوتیوب است اما RSS پیدا نشد (به عنوان وب‌سایت ذخیره شد)."
+
+    # 2. تلگرام
+    elif "t.me" in clean_url:
+        source_type = "Telegram"
+        # تمیز کردن لینک برای اسکرپر
+        if "/s/" not in clean_url and "t.me/" in clean_url:
+            username = clean_url.split("t.me/")[-1].replace("/", "")
+            final_value = f"https://t.me/s/{username}" # لینک نمای عمومی
+        message = "✅ کانال تلگرام شناسایی شد."
+
+    # 3. توییتر / اینستاگرام (محدودیت دسترسی)
+    elif "twitter.com" in clean_url or "x.com" in clean_url or "instagram.com" in clean_url:
+        source_type = "Website" # فعلاً به عنوان وب‌سایت
+        message = "⚠️ برای توییتر/اینستاگرام، جمشید فقط می‌تواند صفحه را چک کند (RSS مستقیم ندارند)."
+
+    # 4. سایر وب‌سایت‌ها (تلاش برای یافتن RSS)
+    else:
+        rss = find_rss_link(clean_url)
+        if rss:
+            source_type = "RSS"
+            # اگر لینک نسبی بود، کاملش کن
+            if rss.startswith("/"):
+                from urllib.parse import urlparse
+                parsed = urlparse(clean_url)
+                final_value = f"{parsed.scheme}://{parsed.netloc}{rss}"
+            else:
+                final_value = rss
+            message = "✅ فید RSS وب‌سایت پیدا شد."
+        else:
+            message = "ℹ️ RSS پیدا نشد. به عنوان وب‌سایت معمولی ذخیره شد."
+
+    # ذخیره در دیتابیس
+    sh.worksheet("Config").append_row([source_type, name, final_value, ""])
+    return message
+
+# --- توابع خبرخوان ---
+def fetch_website_meta(url):
+    try:
+        r = requests.get(url, timeout=5)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        title = soup.title.string if soup.title else url
+        return [[datetime.now().strftime("%Y-%m-%d %H:%M"), "Website", title, url, "New"]]
+    except: return []
+
+def scrape_telegram_channel(url):
     try:
         r = requests.get(url, timeout=10)
         soup = BeautifulSoup(r.text, 'html.parser')
-        messages = soup.find_all('div', class_='tgme_widget_message_wrap')
-        news_list = []
-        for msg in messages[-5:]: # ۵ پیام آخر
-            try:
-                text_elem = msg.find('div', class_='tgme_widget_message_text')
-                if text_elem:
-                    text = text_elem.get_text()[:100] + "..." # خلاصه متن
-                    link_elem = msg.find('a', class_='tgme_widget_message_date')
-                    link = link_elem['href'] if link_elem else url
-                    news_list.append([datetime.now().strftime("%Y-%m-%d %H:%M"), "Telegram", text, link, "New"])
-            except: continue
-        return news_list
+        msgs = soup.find_all('div', class_='tgme_widget_message_wrap')
+        res = []
+        for m in msgs[-5:]:
+            txt_div = m.find('div', class_='tgme_widget_message_text')
+            if txt_div:
+                txt = txt_div.get_text()[:100] + "..."
+                lnk = m.find('a', class_='tgme_widget_message_date')['href']
+                res.append([datetime.now().strftime("%Y-%m-%d %H:%M"), "Telegram", txt, lnk, "New"])
+        return res
     except: return []
 
 def fetch_rss_feed(rss_url):
@@ -170,90 +244,62 @@ if selected_step != st.session_state.active_step:
     st.session_state.active_step = selected_step
     st.rerun()
 
-# ----------------- 1. News Room (فول آپشن) -----------------
+# ----------------- 1. News Room -----------------
 if st.session_state.active_step == "News Room":
     st.header("📰 اتاق خبر")
     
-    tab_feed, tab_sources = st.tabs(["📡 رصد اخبار", "➕ افزودن منبع خبری"])
+    col_monitor, col_add = st.columns([2, 1])
     
-    # تب ۱: رصد و دریافت
-    with tab_feed:
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            if st.button("🔄 دریافت اخبار از تمام منابع"):
-                ws_conf = sh.worksheet("Config")
-                temp_list = []
-                configs = ws_conf.get_all_records()
-                
-                progress_text = "در حال اتصال به منابع..."
-                my_bar = st.progress(0, text=progress_text)
-                
-                total = len(configs)
-                for i, item in enumerate(configs):
-                    my_bar.progress((i + 1) / total if total > 0 else 100, text=f"بررسی: {item['Name']}")
-                    
-                    if item['Type'] == 'RSS' and item['Value']:
-                        temp_list.extend(fetch_rss_feed(item['Value']))
-                    
-                    elif item['Type'] == 'Telegram' and item['Value']:
-                        # استخراج یوزرنیم از لینک (t.me/username)
-                        username = item['Value'].split('/')[-1]
-                        temp_list.extend(scrape_telegram_channel(username))
-                        
-                    elif item['Type'] == 'Youtube_Channel' and item['Value']:
-                        # اگر لینک RSS بود که مستقیم، اگر نه تبدیل
-                        rss_link = item['Value'] 
-                        if "feeds/videos.xml" not in rss_link:
-                            # تلاش برای تبدیل لینک معمولی به RSS
-                            converted = fetch_youtube_channel_rss(item['Value'])
-                            if converted: rss_link = converted
-                        temp_list.extend(fetch_rss_feed(rss_link))
+    # بخش افزودن منبع (هوشمند)
+    with col_add:
+        st.info("➕ افزودن منبع جدید")
+        with st.form("smart_add"):
+            new_link = st.text_input("لینک منبع (URL):", placeholder="لینک کانال یوتیوب، تلگرام یا سایت...")
+            new_name = st.text_input("نام دلخواه:", placeholder="مثلاً: ورزش ۳")
+            
+            if st.form_submit_button("شناسایی و افزودن"):
+                if new_link and new_name:
+                    with st.spinner("در حال کاوش منبع..."):
+                        msg = detect_and_add_source(new_link, new_name)
+                        st.success(msg)
+                        time.sleep(2)
+                        st.rerun()
+                else: st.error("لینک و نام را وارد کنید.")
 
-                my_bar.empty()
-                st.session_state.temp_news = temp_list
-                if temp_list: st.success(f"{len(temp_list)} خبر جدید دریافت شد.")
-                else: st.warning("خبر جدیدی یافت نشد.")
+    # بخش رصد اخبار
+    with col_monitor:
+        st.subheader("📡 رصد اخبار")
+        if st.button("🔄 دریافت اخبار از تمام منابع"):
+            ws_conf = sh.worksheet("Config")
+            temp_list = []
+            configs = ws_conf.get_all_records()
+            
+            bar = st.progress(0, "شروع...")
+            for i, item in enumerate(configs):
+                bar.progress((i+1)/len(configs), f"چک کردن: {item['Name']}")
+                try:
+                    if item['Type'] in ['RSS', 'Youtube_Channel']:
+                        temp_list.extend(fetch_rss_feed(item['Value']))
+                    elif item['Type'] == 'Telegram':
+                        temp_list.extend(scrape_telegram_channel(item['Value']))
+                    elif item['Type'] == 'Website':
+                        temp_list.extend(fetch_website_meta(item['Value']))
+                except: pass
+            
+            bar.empty()
+            st.session_state.temp_news = temp_list
+            if temp_list: st.success(f"{len(temp_list)} خبر جدید!")
+            else: st.warning("خبر جدیدی نیست.")
 
         if st.session_state.temp_news:
-            st.write("### لیست خبرهای دریافتی (قابل ویرایش)")
             df_temp = pd.DataFrame(st.session_state.temp_news, columns=["Date", "Source", "Title", "Link", "Status"])
             edited_df = st.data_editor(df_temp, num_rows="dynamic", use_container_width=True)
-            
-            if st.button("💾 تایید و ذخیره در دیتابیس"):
+            if st.button("💾 ذخیره انتخاب‌‌ها"):
                 final_data = edited_df.values.tolist()
                 if final_data:
                     sh.worksheet("News_Feed").append_rows([r + [""] for r in final_data])
                     st.session_state.temp_news = []
                     st.success("ذخیره شد!"); time.sleep(1); go_to("Scenario Studio")
-        else:
-            st.info("برای دریافت اخبار دکمه بالا را بزنید.")
-
-    # تب ۲: مدیریت منابع (افزودن سورس)
-    with tab_sources:
-        st.subheader("معرفی منبع جدید به جمشید")
-        with st.form("add_source"):
-            src_type = st.selectbox("نوع منبع:", ["RSS (وب‌سایت)", "Telegram (کانال)", "Youtube_Channel", "Twitter/X (فقط لینک RSS)", "Instagram (فقط لینک RSS)"])
-            src_name = st.text_input("نام منبع (مثلا: بی‌بی‌سی):")
-            src_link = st.text_input("لینک (URL):", help="برای تلگرام لینک کانال (t.me/name) و برای یوتیوب لینک کانال را بدهید.")
-            
-            if st.form_submit_button("افزودن منبع"):
-                if src_name and src_link:
-                    # هوشمندسازی لینک یوتیوب
-                    if src_type == "Youtube_Channel" and "feeds" not in src_link:
-                        converted = fetch_youtube_channel_rss(src_link)
-                        if converted:
-                            st.info(f"لینک یوتیوب به فرمت RSS تبدیل شد: {converted}")
-                            src_link = converted
-                    
-                    sh.worksheet("Config").append_row([src_type, src_name, src_link, ""])
-                    st.success(f"منبع '{src_name}' اضافه شد! حالا در تب رصد می‌توانید اخبارش را بگیرید.")
-                else:
-                    st.error("نام و لینک الزامی است.")
-        
-        st.divider()
-        st.write("منابع فعلی:")
-        try: st.dataframe(pd.DataFrame(sh.worksheet("Config").get_all_records()))
-        except: pass
 
 # ----------------- 2. Scenario Studio -----------------
 elif st.session_state.active_step == "Scenario Studio":
@@ -296,7 +342,6 @@ elif st.session_state.active_step == "Scenario Studio":
 # ----------------- 3. Sound Factory -----------------
 elif st.session_state.active_step == "Sound Factory":
     st.header("🎙️ کارخانه صدا")
-    
     model_options = {
         "Eleven V3 / Turbo v2.5": "eleven_turbo_v2_5",
         "Multilingual v2": "eleven_multilingual_v2",
@@ -306,7 +351,6 @@ elif st.session_state.active_step == "Sound Factory":
     selected_model_id = model_options[selected_model_label]
     
     subtab_proj, subtab_free = st.tabs(["📂 پروژه", "✍️ آزاد"])
-    
     with subtab_proj:
         try:
             ws_vid = sh.worksheet("Video_Factory")
@@ -317,20 +361,15 @@ elif st.session_state.active_step == "Sound Factory":
                     idx = st.selectbox("پروژه دیتابیس:", ready.index, index=len(ready)-1, format_func=lambda x: ready.loc[x, 'Project_Name'])
                     row = ready.loc[idx]
                     txt = st.text_area("ویرایش سناریو:", row['Script'], height=200)
-                    
                     if st.button("🎙️ تولید صدا (پروژه)"):
                         with st.spinner(f"ضبط با {selected_model_id}..."):
                             if txt != row['Script']:
                                 cell = ws_vid.find(row['Project_Name'])
                                 ws_vid.update_cell(cell.row, 4, txt)
-                            
                             aud, err = generate_audio_flexible(txt, row['Voice_ID'], selected_model_id)
-                            if aud:
-                                st.audio(aud, format='audio/mp3')
-                                st.success("تولید شد!"); time.sleep(2); go_to("Art Gallery")
+                            if aud: st.audio(aud, format='audio/mp3'); st.success("تولید شد!"); time.sleep(2); go_to("Art Gallery")
                             else: st.error(err)
         except: pass
-
     with subtab_free:
         col_f1, col_f2 = st.columns([3, 1])
         with col_f1: free_text = st.text_area("متن دلخواه:", height=150)
@@ -338,7 +377,6 @@ elif st.session_state.active_step == "Sound Factory":
             voice_dict_free = get_elevenlabs_voices()
             idx_vip = list(voice_dict_free.keys()).index("Nima (VIP)") if "Nima (VIP)" in voice_dict_free else 0
             selected_voice = st.selectbox("انتخاب صدا:", list(voice_dict_free.keys()), index=idx_vip)
-        
         if st.button("🎙️ تولید صدای آزاد"):
             if not free_text: st.error("خالی است.")
             else:
@@ -352,7 +390,7 @@ elif st.session_state.active_step == "Sound Factory":
 elif st.session_state.active_step == "Art Gallery":
     st.header("🎨 گالری تصاویر")
     tab_auto, tab_mix = st.tabs(["📸 شکار خودکار", "📂 ترکیب دستی"])
-    with tab_auto: st.write("سیستم خودکار (نیازمند VPN)")
+    with tab_auto: st.write("سیستم خودکار")
     with tab_mix:
         st.subheader("آپلود + دستور")
         files = st.file_uploader("آپلود (تا ۶ عدد):", accept_multiple_files=True)
@@ -361,10 +399,7 @@ elif st.session_state.active_step == "Art Gallery":
             frames = [f.getvalue() for f in files]
             with st.spinner("نقاشی..."):
                 url = analyze_and_generate_mix(frames, user_prompt)
-                if url: 
-                    st.image(url)
-                    st.markdown(f"[⬇️ دانلود]({url})")
-                    if st.button("رفتن به تدوین"): go_to("Montage Table")
+                if url: st.image(url); st.markdown(f"[⬇️ دانلود]({url})"); st.button("رفتن به تدوین", on_click=lambda: go_to("Montage Table"))
                 else: st.error("خطا.")
 
 # ----------------- 5. Montage Table -----------------
