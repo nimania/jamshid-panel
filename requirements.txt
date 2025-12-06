@@ -1,4 +1,6 @@
 streamlit
 gspread
-pandas
 google-auth
+pandas
+feedparser
+youtube-transcript-api
