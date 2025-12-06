@@ -8,8 +8,13 @@ from openai import OpenAI
 import requests
 from datetime import datetime
 import os
-# برای تدوین ویدئو
-from moviepy.editor import ImageClip, AudioFileClip
+
+# --- تلاش برای وارد کردن ابزار تدوین (جلوگیری از کرش کردن کل برنامه) ---
+try:
+    from moviepy.editor import ImageClip, AudioFileClip
+    HAS_MOVIEPY = True
+except ImportError:
+    HAS_MOVIEPY = False
 
 st.set_page_config(page_title="Jamshid Panel", page_icon="👑", layout="wide")
 
@@ -36,7 +41,7 @@ def generate_script_gpt(text, project_type):
     try:
         client = OpenAI(api_key=st.secrets["openai"]["api_key"])
         if project_type == "پاورقی (سریال ترکی)":
-            system_msg = "تو نویسنده یوتیوب هستی. زیرنویس را به سناریوی جذاب فارسی تبدیل کن (۳ بخش متوالی)."
+            system_msg = "تو نویسنده خلاق یوتیوب هستی. زیرنویس را به سناریوی جذاب فارسی تبدیل کن (۳ بخش متوالی)."
         else:
             system_msg = "تو تحلیلگر هستی. جان کلام متن را استخراج کن."
 
@@ -62,13 +67,12 @@ def get_elevenlabs_voices():
 
 def generate_audio_v3(text, voice_id):
     try:
-        # شکستن متن به تکه‌های کوچک اگر خیلی طولانی باشد (ساده‌سازی شده)
         safe_text = text[:2900] 
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         headers = {"xi-api-key": st.secrets["elevenlabs"]["api_key"], "Content-Type": "application/json"}
         data = {
             "text": safe_text,
-            "model_id": "eleven_multilingual_v2", # یا eleven_v3
+            "model_id": "eleven_multilingual_v2", 
             "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
         }
         response = requests.post(url, json=data, headers=headers)
@@ -118,7 +122,7 @@ with tab_news:
     try: st.dataframe(pd.DataFrame(sh.worksheet("News_Feed").get_all_records()), use_container_width=True)
     except: pass
 
-# --- تب ۲: استودیو سناریو (فقط ورودی و متن) ---
+# --- تب ۲: استودیو سناریو ---
 with tab_story:
     st.header("۱. ورودی و نگارش")
     with st.form("story_form"):
@@ -128,7 +132,6 @@ with tab_story:
             manual = st.text_area("متن دستی (زیرنویس خام):", height=100)
         with col2:
             p_name = st.text_input("نام پروژه:")
-            # انتخاب صدا اینجا فقط برای ثبت اولیه است
             voice_dict = get_elevenlabs_voices()
             idx_nima = list(voice_dict.keys()).index("Nima (VIP)") if "Nima (VIP)" in voice_dict else 0
             voice_name = st.selectbox("گوینده پیش‌فرض:", list(voice_dict.keys()), index=idx_nima)
@@ -139,20 +142,18 @@ with tab_story:
             if sub_text:
                 fname = p_name if p_name.strip() else f"Project {datetime.now().strftime('%H%M')}"
                 sh.worksheet("Video_Factory").append_row([fname, v_url, sub_text, "", final_voice_id, "Raw", ""])
-                st.success("ثبت شد! حالا سناریو را تولید کنید.")
+                st.success("ثبت شد!")
                 st.rerun()
             else: st.error("متن/لینک نامعتبر.")
 
     st.divider()
-    
-    # بخش تولید سناریو با هوش مصنوعی
     try:
         ws_vid = sh.worksheet("Video_Factory")
         df_vid = pd.DataFrame(ws_vid.get_all_records())
         if not df_vid.empty:
             pending = df_vid.reset_index()
-            # فقط نام پروژه را نشان بده
-            sel_idx = st.selectbox("انتخاب پروژه برای نوشتن:", pending.index, format_func=lambda x: f"{pending.loc[x, 'Project_Name']}")
+            def get_label(x): return f"{pending.loc[x, 'Project_Name']}"
+            sel_idx = st.selectbox("انتخاب پروژه برای نوشتن:", pending.index, format_func=get_label)
             sel_row = pending.loc[sel_idx]
             
             st.info(f"پروژه: {sel_row['Project_Name']}")
@@ -165,93 +166,79 @@ with tab_story:
                         cell = ws_vid.find(sel_row['Project_Name'])
                         ws_vid.update_cell(cell.row, 4, res)
                         ws_vid.update_cell(cell.row, 6, "Script Ready")
-                        st.success("سناریو نوشته شد! حالا به تب «کارخانه صدا» بروید.")
-                        st.text_area("پیش‌نمایش:", res, height=150)
+                        st.success("سناریو نوشته شد!")
+                        st.rerun()
                     else: st.error(res)
     except: pass
 
-# --- تب ۳: کارخانه صدا (ویرایش + تولید) ---
+# --- تب ۳: کارخانه صدا ---
 with tab_sound:
     st.header("۲. ویرایش و تولید صدا")
     try:
         ws_vid = sh.worksheet("Video_Factory")
         df_vid = pd.DataFrame(ws_vid.get_all_records())
         if not df_vid.empty:
-            # فقط پروژه‌هایی که سناریو دارند
             ready_for_audio = df_vid[df_vid['Script'] != ""].reset_index()
-            
             if not ready_for_audio.empty:
-                sel_idx_aud = st.selectbox("انتخاب پروژه برای صداگذاری:", ready_for_audio.index, format_func=lambda x: f"{ready_for_audio.loc[x, 'Project_Name']}")
+                def get_lbl_aud(x): return f"{ready_for_audio.loc[x, 'Project_Name']}"
+                sel_idx_aud = st.selectbox("انتخاب پروژه برای صدا:", ready_for_audio.index, format_func=get_lbl_aud)
                 row_aud = ready_for_audio.loc[sel_idx_aud]
                 
-                # >>>> بخش مهم: ویرایشگر متن <<<<
-                st.subheader("متن نهایی را چک کنید:")
-                edited_script = st.text_area(
-                    "اگر لازم است، متن زیر را تغییر دهید و سپس دکمه تولید را بزنید:", 
-                    value=row_aud['Script'], 
-                    height=300
-                )
+                edited_script = st.text_area("متن نهایی:", value=row_aud['Script'], height=200)
                 
-                st.caption(f"تعداد کاراکتر: {len(edited_script)} (محدودیت مدل: ~2900)")
-                
-                if st.button("🎙️ تایید متن و تولید صدا"):
+                if st.button("🎙️ تولید صدا"):
                     vid_voice = row_aud['Voice_ID']
-                    if not vid_voice: st.error("آیدی صدا در پروژه ثبت نشده.")
+                    if not vid_voice: st.error("آیدی صدا ندارد.")
                     else:
-                        with st.spinner("در حال ضبط در استودیو..."):
-                            # اگر کاربر متن را عوض کرده باشد، اول در دیتابیس آپدیت می‌کنیم
+                        with st.spinner("ضبط صدا..."):
                             if edited_script != row_aud['Script']:
                                 cell = ws_vid.find(row_aud['Project_Name'])
                                 ws_vid.update_cell(cell.row, 4, edited_script)
-                                st.toast("تغییرات متن ذخیره شد.", icon="💾")
                             
-                            # تولید صدا
                             audio_data, err = generate_audio_v3(edited_script, vid_voice)
                             if audio_data:
                                 st.audio(audio_data, format='audio/mp3')
-                                st.success("صدا آماده است! سه نقطه سمت راست پلیر را بزنید و دانلود کنید. ⬇️")
-                                st.info("فایل را دانلود کنید و در تب «میز تدوین» آپلود کنید.")
+                                st.success("تولید شد! دانلود کنید ⬇️")
                             else: st.error(err)
-            else: st.info("پروژه‌ای با سناریوی آماده یافت نشد.")
+            else: st.info("پروژه آماده صدا نداریم.")
     except: pass
 
-# --- تب ۴: میز تدوین (ساده) ---
+# --- تب ۴: میز تدوین (امن) ---
 with tab_montage:
-    st.header("۳. ترکیب صدا و تصویر (رندر نهایی)")
+    st.header("۳. ترکیب صدا و تصویر")
     
-    col_img, col_aud = st.columns(2)
-    with col_img:
-        uploaded_img = st.file_uploader("۱. تصویر (تامبنیل/پوستر) را آپلود کنید:", type=["jpg", "png", "jpeg"])
-    with col_aud:
-        uploaded_audio = st.file_uploader("۲. فایل صدا (MP3) را آپلود کنید:", type=["mp3"])
-        
-    if uploaded_img and uploaded_audio:
-        if st.button("🎬 رندر ویدئو"):
-            with st.spinner("در حال تدوین... (ممکن است کمی طول بکشد)"):
-                try:
-                    # ذخیره موقت فایل‌ها
-                    with open("temp_img.jpg", "wb") as f: f.write(uploaded_img.getbuffer())
-                    with open("temp_audio.mp3", "wb") as f: f.write(uploaded_audio.getbuffer())
-                    
-                    # ساخت ویدئو با MoviePy
-                    audio_clip = AudioFileClip("temp_audio.mp3")
-                    video_clip = ImageClip("temp_img.jpg").set_duration(audio_clip.duration)
-                    video_clip = video_clip.set_audio(audio_clip)
-                    # رندر سبک برای وب
-                    video_clip.write_videofile("final_output.mp4", fps=1, codec="libx264", audio_codec="aac")
-                    
-                    # نمایش و دانلود
-                    st.video("final_output.mp4")
-                    with open("final_output.mp4", "rb") as file:
-                        st.download_button("⬇️ دانلود ویدئو نهایی", file, "video.mp4")
+    if HAS_MOVIEPY:
+        col_img, col_aud = st.columns(2)
+        with col_img:
+            uploaded_img = st.file_uploader("۱. تصویر:", type=["jpg", "png"])
+        with col_aud:
+            uploaded_audio = st.file_uploader("۲. صدا:", type=["mp3"])
+            
+        if uploaded_img and uploaded_audio:
+            if st.button("🎬 رندر ویدئو"):
+                with st.spinner("در حال ساخت ویدئو..."):
+                    try:
+                        with open("temp_img.jpg", "wb") as f: f.write(uploaded_img.getbuffer())
+                        with open("temp_audio.mp3", "wb") as f: f.write(uploaded_audio.getbuffer())
                         
-                    # پاکسازی
-                    os.remove("temp_img.jpg")
-                    os.remove("temp_audio.mp3")
-                    os.remove("final_output.mp4")
-                    
-                except Exception as e:
-                    st.error(f"خطا در رندر: {e}")
+                        audio_clip = AudioFileClip("temp_audio.mp3")
+                        video_clip = ImageClip("temp_img.jpg").set_duration(audio_clip.duration)
+                        video_clip = video_clip.set_audio(audio_clip)
+                        video_clip.write_videofile("final_output.mp4", fps=1, codec="libx264", audio_codec="aac")
+                        
+                        st.video("final_output.mp4")
+                        with open("final_output.mp4", "rb") as file:
+                            st.download_button("⬇️ دانلود نهایی", file, "video.mp4")
+                            
+                        os.remove("temp_img.jpg")
+                        os.remove("temp_audio.mp3")
+                        os.remove("final_output.mp4")
+                        
+                    except Exception as e:
+                        st.error(f"خطا در رندر: {e}")
+    else:
+        st.warning("⚠️ ابزار تدوین (moviepy) هنوز روی سرور نصب نشده است.")
+        st.info("راه حل: لطفاً یک بار دیگر در پنل Streamlit دکمه Reboot App را بزنید تا فایل requirements.txt جدید خوانده شود.")
 
 with tab_config:
     try: st.dataframe(pd.DataFrame(sh.worksheet("Config").get_all_records()))
