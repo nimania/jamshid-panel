@@ -9,7 +9,7 @@ import requests
 from datetime import datetime
 import os
 
-# --- تلاش برای وارد کردن ابزار تدوین (جلوگیری از کرش کردن کل برنامه) ---
+# --- چک کردن ابزار تدوین ---
 try:
     from moviepy.editor import ImageClip, AudioFileClip
     HAS_MOVIEPY = True
@@ -35,13 +35,13 @@ def connect_to_db():
 
 sh = connect_to_db()
 
-# --- 2. توابع هوشمند ---
+# --- 2. توابع هوشمند (GPT, ElevenLabs, DALL-E) ---
 def generate_script_gpt(text, project_type):
     if not text: return "متنی وجود ندارد."
     try:
         client = OpenAI(api_key=st.secrets["openai"]["api_key"])
         if project_type == "پاورقی (سریال ترکی)":
-            system_msg = "تو نویسنده خلاق یوتیوب هستی. زیرنویس را به سناریوی جذاب فارسی تبدیل کن (۳ بخش متوالی)."
+            system_msg = "تو نویسنده خلاق یوتیوب هستی. زیرنویس را به سناریوی جذاب فارسی تبدیل کن (۳ بخش متوالی). لحن: صمیمی و داستان‌گو."
         else:
             system_msg = "تو تحلیلگر هستی. جان کلام متن را استخراج کن."
 
@@ -52,6 +52,29 @@ def generate_script_gpt(text, project_type):
         )
         return response.choices[0].message.content
     except Exception as e: return f"خطای OpenAI: {e}"
+
+def generate_image_dalle(prompt_text):
+    """تولید تصویر با DALL-E 3"""
+    try:
+        client = OpenAI(api_key=st.secrets["openai"]["api_key"])
+        
+        # ساخت پرامت انگلیسی برای تصویرسازی بهتر
+        design_prompt = f"""
+        A cinematic movie poster style illustration. 
+        Subject: {prompt_text[:500]}
+        Style: Pastel painting style, soft colors, artistic, high quality, youtube thumbnail.
+        No text, no letters.
+        """
+        
+        response = client.images.generate(
+            model="dall-e-3",
+            prompt=design_prompt,
+            size="1024x1024",
+            quality="standard",
+            n=1,
+        )
+        return response.data[0].url
+    except Exception as e: return f"Error: {e}"
 
 def get_elevenlabs_voices():
     voices = {"Nima (VIP)": "ZHv32fN3Y8F0CxAiAoLA"}
@@ -99,10 +122,11 @@ def download_transcript_heavy(url):
 
 # --- 4. رابط کاربری ---
 st.title("👑 اتاق فرمان جمشید")
-tab_news, tab_story, tab_sound, tab_montage, tab_config = st.tabs([
+tab_news, tab_story, tab_sound, tab_art, tab_montage, tab_config = st.tabs([
     "📰 اتاق خبر", 
     "✍️ استودیو سناریو", 
-    "🎙️ کارخانه صدا", 
+    "🎙️ کارخانه صدا",
+    "🎨 گالری تصاویر", 
     "🎬 میز تدوین",
     "⚙️ تنظیمات"
 ])
@@ -145,7 +169,6 @@ with tab_story:
                 st.success("ثبت شد!")
                 st.rerun()
             else: st.error("متن/لینک نامعتبر.")
-
     st.divider()
     try:
         ws_vid = sh.worksheet("Video_Factory")
@@ -178,11 +201,10 @@ with tab_sound:
         ws_vid = sh.worksheet("Video_Factory")
         df_vid = pd.DataFrame(ws_vid.get_all_records())
         if not df_vid.empty:
-            ready_for_audio = df_vid[df_vid['Script'] != ""].reset_index()
-            if not ready_for_audio.empty:
-                def get_lbl_aud(x): return f"{ready_for_audio.loc[x, 'Project_Name']}"
-                sel_idx_aud = st.selectbox("انتخاب پروژه برای صدا:", ready_for_audio.index, format_func=get_lbl_aud)
-                row_aud = ready_for_audio.loc[sel_idx_aud]
+            ready = df_vid[df_vid['Script'] != ""].reset_index()
+            if not ready.empty:
+                sel_idx_aud = st.selectbox("انتخاب پروژه صوتی:", ready.index, format_func=lambda x: f"{ready.loc[x, 'Project_Name']}")
+                row_aud = ready.loc[sel_idx_aud]
                 
                 edited_script = st.text_area("متن نهایی:", value=row_aud['Script'], height=200)
                 
@@ -198,25 +220,55 @@ with tab_sound:
                             audio_data, err = generate_audio_v3(edited_script, vid_voice)
                             if audio_data:
                                 st.audio(audio_data, format='audio/mp3')
-                                st.success("تولید شد! دانلود کنید ⬇️")
+                                st.success("صدا تولید شد! دانلود کنید ⬇️")
                             else: st.error(err)
-            else: st.info("پروژه آماده صدا نداریم.")
+            else: st.info("پروژه آماده نیست.")
     except: pass
 
-# --- تب ۴: میز تدوین (امن) ---
-with tab_montage:
-    st.header("۳. ترکیب صدا و تصویر")
+# --- تب ۴: گالری تصاویر (جدید) ---
+with tab_art:
+    st.header("۳. طراحی پوستر (DALL-E 3)")
+    st.caption("بر اساس سناریوی شما، یک پوستر سینمایی با سبک پاستل نقاشی طراحی می‌شود.")
     
+    try:
+        ws_vid = sh.worksheet("Video_Factory")
+        df_vid = pd.DataFrame(ws_vid.get_all_records())
+        if not df_vid.empty:
+            ready_art = df_vid[df_vid['Script'] != ""].reset_index()
+            
+            if not ready_art.empty:
+                sel_idx_art = st.selectbox("انتخاب پروژه برای طراحی:", ready_art.index, format_func=lambda x: f"{ready_art.loc[x, 'Project_Name']}")
+                row_art = ready_art.loc[sel_idx_art]
+                
+                # پیشنهاد پرامت بر اساس سناریو
+                default_prompt = f"Scene from a Turkish drama: {row_art['Project_Name']}. {row_art['Script'][:100]}..." 
+                user_prompt = st.text_area("توصیف تصویر (می‌توانید تغییر دهید):", value=default_prompt, height=100)
+                
+                if st.button("🎨 نقاشی کن (DALL-E)"):
+                    with st.spinner("جمشید در حال نقاشی... (حدود ۱۵ ثانیه)"):
+                        img_url = generate_image_dalle(user_prompt)
+                        if "Error" not in img_url:
+                            st.image(img_url, caption="پوستر اختصاصی شما", width=500)
+                            st.markdown(f"[⬇️ دانلود تصویر با کیفیت بالا]({img_url})")
+                            st.success("تصویر آماده است! آن را ذخیره کنید تا در میز تدوین استفاده کنیم.")
+                        else:
+                            st.error(img_url)
+            else: st.info("پروژه‌ای برای طراحی موجود نیست.")
+    except: pass
+
+# --- تب ۵: میز تدوین ---
+with tab_montage:
+    st.header("۴. ترکیب نهایی (Render)")
     if HAS_MOVIEPY:
         col_img, col_aud = st.columns(2)
         with col_img:
-            uploaded_img = st.file_uploader("۱. تصویر:", type=["jpg", "png"])
+            uploaded_img = st.file_uploader("۱. تصویر (دانلود شده از گالری):", type=["jpg", "png", "webp"])
         with col_aud:
-            uploaded_audio = st.file_uploader("۲. صدا:", type=["mp3"])
+            uploaded_audio = st.file_uploader("۲. صدا (دانلود شده از کارخانه صدا):", type=["mp3"])
             
         if uploaded_img and uploaded_audio:
-            if st.button("🎬 رندر ویدئو"):
-                with st.spinner("در حال ساخت ویدئو..."):
+            if st.button("🎬 رندر ویدئو نهایی"):
+                with st.spinner("در حال میکس و خروجی گرفتن..."):
                     try:
                         with open("temp_img.jpg", "wb") as f: f.write(uploaded_img.getbuffer())
                         with open("temp_audio.mp3", "wb") as f: f.write(uploaded_audio.getbuffer())
@@ -228,17 +280,13 @@ with tab_montage:
                         
                         st.video("final_output.mp4")
                         with open("final_output.mp4", "rb") as file:
-                            st.download_button("⬇️ دانلود نهایی", file, "video.mp4")
+                            st.download_button("⬇️ دانلود ویدئو MP4", file, "video.mp4")
                             
                         os.remove("temp_img.jpg")
                         os.remove("temp_audio.mp3")
                         os.remove("final_output.mp4")
-                        
-                    except Exception as e:
-                        st.error(f"خطا در رندر: {e}")
-    else:
-        st.warning("⚠️ ابزار تدوین (moviepy) هنوز روی سرور نصب نشده است.")
-        st.info("راه حل: لطفاً یک بار دیگر در پنل Streamlit دکمه Reboot App را بزنید تا فایل requirements.txt جدید خوانده شود.")
+                    except Exception as e: st.error(f"خطا در رندر: {e}")
+    else: st.warning("ابزار تدوین نصب نیست. ریبوت کنید.")
 
 with tab_config:
     try: st.dataframe(pd.DataFrame(sh.worksheet("Config").get_all_records()))
