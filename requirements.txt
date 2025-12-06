@@ -4,4 +4,4 @@ google-auth
 pandas
 feedparser
 yt-dlp
-requests
+openai
