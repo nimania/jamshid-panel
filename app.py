@@ -14,6 +14,7 @@ import numpy as np
 import random
 import time
 from bs4 import BeautifulSoup
+import re
 
 # --- تنظیمات ---
 st.set_page_config(page_title="Jamshid Panel", page_icon="👑", layout="wide")
@@ -87,21 +88,13 @@ def analyze_and_generate_mix(images_bytes, user_instruction):
     except Exception as e: return None
 
 def generate_audio_flexible(text, voice_id, model_choice):
-    """تولید صدا با انتخاب مدل دقیق"""
     try:
-        safe_text = text[:5000] # مدل‌های جدید محدودیت کمتری دارند
+        safe_text = text[:3000] 
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         headers = {"xi-api-key": st.secrets["elevenlabs"]["api_key"], "Content-Type": "application/json"}
-        
         data = {
-            "text": safe_text, 
-            "model_id": model_choice, # استفاده از مدل انتخابی کاربر
-            "voice_settings": {
-                "stability": 0.50,
-                "similarity_boost": 0.80,
-                "style": 0.0,
-                "use_speaker_boost": True
-            }
+            "text": safe_text, "model_id": model_choice, 
+            "voice_settings": {"stability": 0.50, "similarity_boost": 0.80, "style": 0.0, "use_speaker_boost": True}
         }
         r = requests.post(url, json=data, headers=headers)
         if r.status_code == 200: return r.content, None
@@ -119,13 +112,38 @@ def get_elevenlabs_voices():
     except: pass
     return voices
 
-# --- توابع کمکی ---
-def fetch_website_meta(url):
+# --- توابع خبرخوان (پیشرفته) ---
+def fetch_youtube_channel_rss(channel_url):
+    """تبدیل لینک کانال یوتیوب به RSS"""
+    # تلاش برای یافتن Channel ID از سورس صفحه
     try:
-        r = requests.get(url, timeout=5)
+        cookies = {'CONSENT': 'YES+'}
+        r = requests.get(channel_url, cookies=cookies, headers={'User-Agent': 'Mozilla/5.0'})
+        match = re.search(r'channelId":"(.*?)"', r.text)
+        if match:
+            cid = match.group(1)
+            return f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}"
+    except: pass
+    return None
+
+def scrape_telegram_channel(channel_username):
+    """خواندن آخرین پست‌های کانال تلگرام (نمای عمومی)"""
+    url = f"https://t.me/s/{channel_username}"
+    try:
+        r = requests.get(url, timeout=10)
         soup = BeautifulSoup(r.text, 'html.parser')
-        title = soup.title.string if soup.title else url
-        return [[datetime.now().strftime("%Y-%m-%d %H:%M"), "Website", title, url, "New"]]
+        messages = soup.find_all('div', class_='tgme_widget_message_wrap')
+        news_list = []
+        for msg in messages[-5:]: # ۵ پیام آخر
+            try:
+                text_elem = msg.find('div', class_='tgme_widget_message_text')
+                if text_elem:
+                    text = text_elem.get_text()[:100] + "..." # خلاصه متن
+                    link_elem = msg.find('a', class_='tgme_widget_message_date')
+                    link = link_elem['href'] if link_elem else url
+                    news_list.append([datetime.now().strftime("%Y-%m-%d %H:%M"), "Telegram", text, link, "New"])
+            except: continue
+        return news_list
     except: return []
 
 def fetch_rss_feed(rss_url):
@@ -152,50 +170,90 @@ if selected_step != st.session_state.active_step:
     st.session_state.active_step = selected_step
     st.rerun()
 
-# ----------------- 1. News Room -----------------
+# ----------------- 1. News Room (فول آپشن) -----------------
 if st.session_state.active_step == "News Room":
     st.header("📰 اتاق خبر")
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        st.subheader("۱. دریافت خودکار")
-        if st.button("🔄 فراخوانی منابع"):
-            ws_conf = sh.worksheet("Config")
-            temp_list = []
-            for item in ws_conf.get_all_records():
-                if item['Type'] == 'RSS' and item['Value']: temp_list.extend(fetch_rss_feed(item['Value']))
-                elif item['Type'] == 'Website' and item['Value']: temp_list.extend(fetch_website_meta(item['Value']))
-            st.session_state.temp_news = temp_list
-            if temp_list: st.success(f"{len(temp_list)} آیتم پیدا شد.")
-            else: st.warning("چیزی پیدا نشد.")
+    
+    tab_feed, tab_sources = st.tabs(["📡 رصد اخبار", "➕ افزودن منبع خبری"])
+    
+    # تب ۱: رصد و دریافت
+    with tab_feed:
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            if st.button("🔄 دریافت اخبار از تمام منابع"):
+                ws_conf = sh.worksheet("Config")
+                temp_list = []
+                configs = ws_conf.get_all_records()
+                
+                progress_text = "در حال اتصال به منابع..."
+                my_bar = st.progress(0, text=progress_text)
+                
+                total = len(configs)
+                for i, item in enumerate(configs):
+                    my_bar.progress((i + 1) / total if total > 0 else 100, text=f"بررسی: {item['Name']}")
+                    
+                    if item['Type'] == 'RSS' and item['Value']:
+                        temp_list.extend(fetch_rss_feed(item['Value']))
+                    
+                    elif item['Type'] == 'Telegram' and item['Value']:
+                        # استخراج یوزرنیم از لینک (t.me/username)
+                        username = item['Value'].split('/')[-1]
+                        temp_list.extend(scrape_telegram_channel(username))
+                        
+                    elif item['Type'] == 'Youtube_Channel' and item['Value']:
+                        # اگر لینک RSS بود که مستقیم، اگر نه تبدیل
+                        rss_link = item['Value'] 
+                        if "feeds/videos.xml" not in rss_link:
+                            # تلاش برای تبدیل لینک معمولی به RSS
+                            converted = fetch_youtube_channel_rss(item['Value'])
+                            if converted: rss_link = converted
+                        temp_list.extend(fetch_rss_feed(rss_link))
 
-    with col2:
-        st.subheader("۲. ورودی دستی")
-        with st.form("manual_news"):
-            m_source = st.selectbox("منبع:", ["Twitter (X)", "Telegram", "Instagram", "Other"])
-            m_title = st.text_input("تیتر/خلاصه خبر:")
-            m_link = st.text_input("لینک پست:")
-            if st.form_submit_button("افزودن"):
-                st.session_state.temp_news.append([datetime.now().strftime("%Y-%m-%d %H:%M"), m_source, m_title, m_link, "New"])
-                st.rerun()
+                my_bar.empty()
+                st.session_state.temp_news = temp_list
+                if temp_list: st.success(f"{len(temp_list)} خبر جدید دریافت شد.")
+                else: st.warning("خبر جدیدی یافت نشد.")
 
-    st.divider()
-    st.subheader("۳. تایید نهایی")
-    if st.session_state.temp_news:
-        df_temp = pd.DataFrame(st.session_state.temp_news, columns=["Date", "Source", "Title", "Link", "Status"])
-        edited_df = st.data_editor(df_temp, num_rows="dynamic", use_container_width=True)
-        col_s1, col_s2 = st.columns(2)
-        if col_s1.button("💾 ذخیره در دیتابیس"):
-            final_data = edited_df.values.tolist()
-            if final_data:
-                sh.worksheet("News_Feed").append_rows([r + [""] for r in final_data])
-                st.session_state.temp_news = []
-                st.success("ذخیره شد!"); time.sleep(1); go_to("Scenario Studio")
-        if col_s2.button("❌ پاک کردن لیست"): st.session_state.temp_news = []; st.rerun()
-    else:
-        st.info("لیست موقت خالی است.")
-        with st.expander("آرشیو دیتابیس"):
-            try: st.dataframe(pd.DataFrame(sh.worksheet("News_Feed").get_all_records()))
-            except: pass
+        if st.session_state.temp_news:
+            st.write("### لیست خبرهای دریافتی (قابل ویرایش)")
+            df_temp = pd.DataFrame(st.session_state.temp_news, columns=["Date", "Source", "Title", "Link", "Status"])
+            edited_df = st.data_editor(df_temp, num_rows="dynamic", use_container_width=True)
+            
+            if st.button("💾 تایید و ذخیره در دیتابیس"):
+                final_data = edited_df.values.tolist()
+                if final_data:
+                    sh.worksheet("News_Feed").append_rows([r + [""] for r in final_data])
+                    st.session_state.temp_news = []
+                    st.success("ذخیره شد!"); time.sleep(1); go_to("Scenario Studio")
+        else:
+            st.info("برای دریافت اخبار دکمه بالا را بزنید.")
+
+    # تب ۲: مدیریت منابع (افزودن سورس)
+    with tab_sources:
+        st.subheader("معرفی منبع جدید به جمشید")
+        with st.form("add_source"):
+            src_type = st.selectbox("نوع منبع:", ["RSS (وب‌سایت)", "Telegram (کانال)", "Youtube_Channel", "Twitter/X (فقط لینک RSS)", "Instagram (فقط لینک RSS)"])
+            src_name = st.text_input("نام منبع (مثلا: بی‌بی‌سی):")
+            src_link = st.text_input("لینک (URL):", help="برای تلگرام لینک کانال (t.me/name) و برای یوتیوب لینک کانال را بدهید.")
+            
+            if st.form_submit_button("افزودن منبع"):
+                if src_name and src_link:
+                    # هوشمندسازی لینک یوتیوب
+                    if src_type == "Youtube_Channel" and "feeds" not in src_link:
+                        converted = fetch_youtube_channel_rss(src_link)
+                        if converted:
+                            st.info(f"لینک یوتیوب به فرمت RSS تبدیل شد: {converted}")
+                            src_link = converted
+                    
+                    sh.worksheet("Config").append_row([src_type, src_name, src_link, ""])
+                    st.success(f"منبع '{src_name}' اضافه شد! حالا در تب رصد می‌توانید اخبارش را بگیرید.")
+                else:
+                    st.error("نام و لینک الزامی است.")
+        
+        st.divider()
+        st.write("منابع فعلی:")
+        try: st.dataframe(pd.DataFrame(sh.worksheet("Config").get_all_records()))
+        except: pass
 
 # ----------------- 2. Scenario Studio -----------------
 elif st.session_state.active_step == "Scenario Studio":
@@ -222,6 +280,7 @@ elif st.session_state.active_step == "Scenario Studio":
             pend = df.reset_index()
             idx = st.selectbox("انتخاب پروژه:", pend.index, index=len(pend)-1, format_func=lambda x: pend.loc[x, 'Project_Name'])
             row = pend.loc[idx]
+            
             style = st.radio("مود نویسنده:", ["پاورقی (سریال ترکی)", "جان کلام (تحلیلی)", "✨ پرامت آزاد (Custom)"], horizontal=True)
             custom_prompt = ""
             if style == "✨ پرامت آزاد (Custom)": custom_prompt = st.text_area("دستور اختصاصی:", "بازنویسی خلاقانه...")
@@ -237,21 +296,17 @@ elif st.session_state.active_step == "Scenario Studio":
 # ----------------- 3. Sound Factory -----------------
 elif st.session_state.active_step == "Sound Factory":
     st.header("🎙️ کارخانه صدا")
-    st.info("مجهز به موتورهای نسل جدید ElevenLabs")
     
-    # >>> منوی انتخاب موتور صدا (با گزینه V3) <<<
     model_options = {
-        "Eleven V3 / Turbo v2.5 (جدید و سریع)": "eleven_turbo_v2_5",
-        "Multilingual v2 (بهترین کیفیت داستانی)": "eleven_multilingual_v2",
-        "Flash v2.5 (فوق سریع)": "eleven_flash_v2_5"
+        "Eleven V3 / Turbo v2.5": "eleven_turbo_v2_5",
+        "Multilingual v2": "eleven_multilingual_v2",
+        "Flash v2.5": "eleven_flash_v2_5"
     }
-    
-    selected_model_label = st.selectbox("انتخاب موتور هوش مصنوعی صدا:", list(model_options.keys()))
+    selected_model_label = st.selectbox("انتخاب موتور:", list(model_options.keys()))
     selected_model_id = model_options[selected_model_label]
     
-    subtab_proj, subtab_free = st.tabs(["📂 بر اساس پروژه", "✍️ متن آزاد"])
+    subtab_proj, subtab_free = st.tabs(["📂 پروژه", "✍️ آزاد"])
     
-    # 1. حالت پروژه
     with subtab_proj:
         try:
             ws_vid = sh.worksheet("Video_Factory")
@@ -264,7 +319,7 @@ elif st.session_state.active_step == "Sound Factory":
                     txt = st.text_area("ویرایش سناریو:", row['Script'], height=200)
                     
                     if st.button("🎙️ تولید صدا (پروژه)"):
-                        with st.spinner(f"ضبط با موتور {selected_model_id}..."):
+                        with st.spinner(f"ضبط با {selected_model_id}..."):
                             if txt != row['Script']:
                                 cell = ws_vid.find(row['Project_Name'])
                                 ws_vid.update_cell(cell.row, 4, txt)
@@ -272,47 +327,39 @@ elif st.session_state.active_step == "Sound Factory":
                             aud, err = generate_audio_flexible(txt, row['Voice_ID'], selected_model_id)
                             if aud:
                                 st.audio(aud, format='audio/mp3')
-                                st.success(f"✅ تولید شد! (مدل: {selected_model_id})")
-                                time.sleep(2); go_to("Art Gallery")
+                                st.success("تولید شد!"); time.sleep(2); go_to("Art Gallery")
                             else: st.error(err)
         except: pass
 
-    # 2. حالت متن آزاد
     with subtab_free:
         col_f1, col_f2 = st.columns([3, 1])
-        with col_f1:
-            free_text = st.text_area("متن دلخواه:", height=150, placeholder="سلام...")
+        with col_f1: free_text = st.text_area("متن دلخواه:", height=150)
         with col_f2:
             voice_dict_free = get_elevenlabs_voices()
             idx_vip = list(voice_dict_free.keys()).index("Nima (VIP)") if "Nima (VIP)" in voice_dict_free else 0
             selected_voice = st.selectbox("انتخاب صدا:", list(voice_dict_free.keys()), index=idx_vip)
         
         if st.button("🎙️ تولید صدای آزاد"):
-            if not free_text: st.error("متن خالی است.")
+            if not free_text: st.error("خالی است.")
             else:
-                with st.spinner(f"تولید با موتور {selected_model_id}..."):
+                with st.spinner("تولید..."):
                     voice_id_free = voice_dict_free.get(selected_voice)
                     aud_free, err_free = generate_audio_flexible(free_text, voice_id_free, selected_model_id)
-                    if aud_free:
-                        st.audio(aud_free, format='audio/mp3')
-                        st.success(f"✅ صدا آماده است! (مدل: {selected_model_id})")
+                    if aud_free: st.audio(aud_free, format='audio/mp3'); st.success("آماده است!")
                     else: st.error(err_free)
 
 # ----------------- 4. Art Gallery -----------------
 elif st.session_state.active_step == "Art Gallery":
     st.header("🎨 گالری تصاویر")
     tab_auto, tab_mix = st.tabs(["📸 شکار خودکار", "📂 ترکیب دستی"])
-    with tab_auto:
-         st.write("سیستم خودکار (نیازمند VPN)") 
-         # کد قبلی...
-         
+    with tab_auto: st.write("سیستم خودکار (نیازمند VPN)")
     with tab_mix:
-        st.subheader("آپلود چند تصویر + دستور خلاقانه")
+        st.subheader("آپلود + دستور")
         files = st.file_uploader("آپلود (تا ۶ عدد):", accept_multiple_files=True)
         user_prompt = st.text_area("توصیف:", "Combine into cinematic 16:9 poster.")
         if files and st.button("🎨 خلق اثر"):
             frames = [f.getvalue() for f in files]
-            with st.spinner("در حال نقاشی..."):
+            with st.spinner("نقاشی..."):
                 url = analyze_and_generate_mix(frames, user_prompt)
                 if url: 
                     st.image(url)
