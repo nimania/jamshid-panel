@@ -1,47 +1,57 @@
 import streamlit as st
 import pandas as pd
 import gspread
+from google.oauth2.service_account import Credentials
 
 # --- تنظیمات صفحه ---
 st.set_page_config(page_title="Jamshid Panel", page_icon="👑", layout="wide")
 
-# --- اتصال به دیتابیس (نسخه ضد گلوله) ---
+# --- اتصال به دیتابیس (روش تضمینی) ---
 @st.cache_resource
 def connect_to_db():
     try:
-        # دریافت اطلاعات از تنظیمات مخفی
-        credentials = dict(st.secrets["gcp_service_account"])
+        # 1. دریافت اطلاعات از تنظیمات
+        info = dict(st.secrets["gcp_service_account"])
         
-        # این خط جادویی، مشکل فرمت کلید را حل می‌کند
-        credentials["private_key"] = credentials["private_key"].replace("\\n", "\n")
-
-        # اتصال مستقیم و ساده
-        gc = gspread.service_account_from_dict(credentials)
-        return gc.open("Command_Center")
+        # 2. اصلاح فرمت کلید (باگ‌گیری خودکار)
+        if "private_key" in info:
+            info["private_key"] = info["private_key"].replace("\\n", "\n")
+        
+        # 3. تعریف سطح دسترسی (Scopes)
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        
+        # 4. ساخت اعتبارنامه به روش استاندارد گوگل
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+        client = gspread.authorize(creds)
+        
+        # 5. باز کردن شیت
+        return client.open("Command_Center")
         
     except Exception as e:
         st.error(f"❌ خطای اتصال: {e}")
-        st.info("راهنما: لطفا چک کنید اسم فایل گوگل شیت دقیقاً Command_Center باشد و ربات به آن دسترسی داشته باشد.")
+        st.info("راهنما: لطفا چک کنید در فایل secrets.toml همه چیز داخل گیومه باشد.")
         st.stop()
 
-# --- شروع سیستم ---
+# --- بدنه اصلی ---
 sh = connect_to_db()
-st.toast("جمشید متصل شد! 🚀", icon="✅")
+st.toast("اتصال موفق بود! ✅", icon="🚀")
 
 st.title("👑 اتاق فرمان جمشید")
 
-# تب‌ها
 tab1, tab2 = st.tabs(["📰 اخبار", "⚙️ تنظیمات"])
 
 with tab1:
-    st.header("لیست اخبار")
+    st.subheader("اخبار موجود در دیتابیس")
     try:
         ws = sh.worksheet("News_Feed")
         data = ws.get_all_records()
         df = pd.DataFrame(data)
         st.dataframe(df, use_container_width=True)
     except:
-        st.warning("تب News_Feed در گوگل شیت پیدا نشد.")
+        st.warning("تب News_Feed خالی است یا وجود ندارد.")
 
 with tab2:
-    st.write("تنظیمات سیستم فعال است.")
+    st.write("تنظیمات فعال است.")
