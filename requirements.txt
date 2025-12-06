@@ -8,3 +8,5 @@ openai
 requests
 moviepy
 imageio-ffmpeg
+opencv-python-headless
+numpy
