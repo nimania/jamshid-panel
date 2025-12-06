@@ -5,4 +5,4 @@ pandas
 feedparser
 youtube-transcript-api
 yt-dlp
-google-generativeai
+google-generativeai>=0.7.0
