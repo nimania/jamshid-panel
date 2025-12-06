@@ -49,7 +49,7 @@ def connect_to_db():
 
 sh = connect_to_db()
 
-# --- 2. توابع هوشمند (AI & Media) ---
+# --- 2. توابع هوشمند ---
 def generate_script_gpt(text, project_type, custom_prompt=""):
     if not text: return "متنی وجود ندارد."
     try:
@@ -112,7 +112,7 @@ def get_elevenlabs_voices():
     except: pass
     return voices
 
-# --- توابع شکارچی منبع (Source Hunters) ---
+# --- توابع شکارچی منبع (اصلاح شده) ---
 def find_rss_link(url):
     """جستجوی لینک RSS در کدهای صفحه"""
     try:
@@ -126,73 +126,75 @@ def find_rss_link(url):
     return None
 
 def fetch_youtube_channel_rss(url):
-    """تبدیل پیشرفته لینک کانال یوتیوب به RSS"""
     try:
-        # اگر خودش لینک RSS بود
         if "feeds/videos.xml" in url: return url
-        
-        # استخراج Channel ID
         cookies = {'CONSENT': 'YES+'}
         r = requests.get(url, cookies=cookies, headers={'User-Agent': 'Mozilla/5.0'})
-        
-        # روش 1: پیدا کردن channelId در متادیتا
         match = re.search(r'"channelId":"(UC[\w-]+)"', r.text)
-        if match:
-            return f"https://www.youtube.com/feeds/videos.xml?channel_id={match.group(1)}"
-        
-        # روش 2: جستجوی لینک RSS در هدر
+        if match: return f"https://www.youtube.com/feeds/videos.xml?channel_id={match.group(1)}"
         return find_rss_link(url)
     except: pass
     return None
 
 def detect_and_add_source(url, name):
-    """مغز متفکر شناسایی منبع"""
+    """مغز متفکر شناسایی منبع (با رفع باگ)"""
     clean_url = url.strip()
-    source_type = "Website" # پیش‌فرض
+    source_type = "Website" 
     final_value = clean_url
     message = ""
 
-    # 1. یوتیوب
-    if "youtube.com" in clean_url or "youtu.be" in clean_url:
+    # 1. آیا خودِ لینک یک RSS است؟ (چک کردن مستقیم با feedparser)
+    is_direct_rss = False
+    try:
+        f = feedparser.parse(clean_url)
+        # اگر ورودی داشت یعنی فید سالم است
+        if len(f.entries) > 0 or f.version:
+            is_direct_rss = True
+    except: pass
+
+    if is_direct_rss:
+        source_type = "RSS"
+        final_value = clean_url
+        message = "✅ لینک مستقیم RSS تایید شد."
+
+    # 2. اگر یوتیوب بود
+    elif "youtube.com" in clean_url or "youtu.be" in clean_url:
         rss = fetch_youtube_channel_rss(clean_url)
         if rss:
             source_type = "Youtube_Channel"
             final_value = rss
-            message = "✅ کانال یوتیوب شناسایی شد (RSS استخراج شد)."
+            message = "✅ کانال یوتیوب شناسایی شد."
         else:
-            message = "⚠️ لینک یوتیوب است اما RSS پیدا نشد (به عنوان وب‌سایت ذخیره شد)."
+            message = "⚠️ لینک یوتیوب است اما RSS پیدا نشد."
 
-    # 2. تلگرام
+    # 3. اگر تلگرام بود
     elif "t.me" in clean_url:
         source_type = "Telegram"
-        # تمیز کردن لینک برای اسکرپر
         if "/s/" not in clean_url and "t.me/" in clean_url:
             username = clean_url.split("t.me/")[-1].replace("/", "")
-            final_value = f"https://t.me/s/{username}" # لینک نمای عمومی
+            final_value = f"https://t.me/s/{username}"
         message = "✅ کانال تلگرام شناسایی شد."
 
-    # 3. توییتر / اینستاگرام (محدودیت دسترسی)
+    # 4. توییتر/اینستاگرام
     elif "twitter.com" in clean_url or "x.com" in clean_url or "instagram.com" in clean_url:
-        source_type = "Website" # فعلاً به عنوان وب‌سایت
-        message = "⚠️ برای توییتر/اینستاگرام، جمشید فقط می‌تواند صفحه را چک کند (RSS مستقیم ندارند)."
+        source_type = "Website"
+        message = "⚠️ توییتر/اینستاگرام RSS ندارند. به عنوان وب‌سایت ذخیره شد."
 
-    # 4. سایر وب‌سایت‌ها (تلاش برای یافتن RSS)
+    # 5. سایر وب‌سایت‌ها (اگر RSS مستقیم نبود، جستجو کن)
     else:
         rss = find_rss_link(clean_url)
         if rss:
             source_type = "RSS"
-            # اگر لینک نسبی بود، کاملش کن
             if rss.startswith("/"):
                 from urllib.parse import urlparse
                 parsed = urlparse(clean_url)
                 final_value = f"{parsed.scheme}://{parsed.netloc}{rss}"
             else:
                 final_value = rss
-            message = "✅ فید RSS وب‌سایت پیدا شد."
+            message = "✅ RSS در صفحه سایت پیدا شد."
         else:
             message = "ℹ️ RSS پیدا نشد. به عنوان وب‌سایت معمولی ذخیره شد."
 
-    # ذخیره در دیتابیس
     sh.worksheet("Config").append_row([source_type, name, final_value, ""])
     return message
 
@@ -247,59 +249,61 @@ if selected_step != st.session_state.active_step:
 # ----------------- 1. News Room -----------------
 if st.session_state.active_step == "News Room":
     st.header("📰 اتاق خبر")
+    tab_feed, tab_sources = st.tabs(["📡 رصد اخبار", "➕ افزودن منبع خبری"])
     
-    col_monitor, col_add = st.columns([2, 1])
-    
-    # بخش افزودن منبع (هوشمند)
-    with col_add:
-        st.info("➕ افزودن منبع جدید")
-        with st.form("smart_add"):
-            new_link = st.text_input("لینک منبع (URL):", placeholder="لینک کانال یوتیوب، تلگرام یا سایت...")
-            new_name = st.text_input("نام دلخواه:", placeholder="مثلاً: ورزش ۳")
-            
-            if st.form_submit_button("شناسایی و افزودن"):
-                if new_link and new_name:
-                    with st.spinner("در حال کاوش منبع..."):
-                        msg = detect_and_add_source(new_link, new_name)
-                        st.success(msg)
-                        time.sleep(2)
-                        st.rerun()
-                else: st.error("لینک و نام را وارد کنید.")
-
-    # بخش رصد اخبار
-    with col_monitor:
-        st.subheader("📡 رصد اخبار")
-        if st.button("🔄 دریافت اخبار از تمام منابع"):
-            ws_conf = sh.worksheet("Config")
-            temp_list = []
-            configs = ws_conf.get_all_records()
-            
-            bar = st.progress(0, "شروع...")
-            for i, item in enumerate(configs):
-                bar.progress((i+1)/len(configs), f"چک کردن: {item['Name']}")
-                try:
-                    if item['Type'] in ['RSS', 'Youtube_Channel']:
-                        temp_list.extend(fetch_rss_feed(item['Value']))
-                    elif item['Type'] == 'Telegram':
-                        temp_list.extend(scrape_telegram_channel(item['Value']))
-                    elif item['Type'] == 'Website':
-                        temp_list.extend(fetch_website_meta(item['Value']))
-                except: pass
-            
-            bar.empty()
-            st.session_state.temp_news = temp_list
-            if temp_list: st.success(f"{len(temp_list)} خبر جدید!")
-            else: st.warning("خبر جدیدی نیست.")
+    with tab_feed:
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            if st.button("🔄 دریافت اخبار از تمام منابع"):
+                ws_conf = sh.worksheet("Config")
+                temp_list = []
+                configs = ws_conf.get_all_records()
+                bar = st.progress(0, "شروع...")
+                for i, item in enumerate(configs):
+                    bar.progress((i+1)/len(configs), f"چک کردن: {item['Name']}")
+                    try:
+                        if item['Type'] in ['RSS', 'Youtube_Channel']:
+                            temp_list.extend(fetch_rss_feed(item['Value']))
+                        elif item['Type'] == 'Telegram':
+                            temp_list.extend(scrape_telegram_channel(item['Value']))
+                        elif item['Type'] == 'Website':
+                            temp_list.extend(fetch_website_meta(item['Value']))
+                    except: pass
+                bar.empty()
+                st.session_state.temp_news = temp_list
+                if temp_list: st.success(f"{len(temp_list)} خبر جدید!")
+                else: st.warning("خبر جدیدی نیست.")
 
         if st.session_state.temp_news:
+            st.write("### لیست خبرها (قابل ویرایش)")
             df_temp = pd.DataFrame(st.session_state.temp_news, columns=["Date", "Source", "Title", "Link", "Status"])
             edited_df = st.data_editor(df_temp, num_rows="dynamic", use_container_width=True)
-            if st.button("💾 ذخیره انتخاب‌‌ها"):
+            if st.button("💾 تایید و ذخیره"):
                 final_data = edited_df.values.tolist()
                 if final_data:
                     sh.worksheet("News_Feed").append_rows([r + [""] for r in final_data])
                     st.session_state.temp_news = []
                     st.success("ذخیره شد!"); time.sleep(1); go_to("Scenario Studio")
+        else:
+            st.info("برای دریافت اخبار دکمه بالا را بزنید.")
+
+    with tab_sources:
+        st.subheader("معرفی منبع جدید به جمشید")
+        with st.form("smart_add"):
+            new_link = st.text_input("لینک منبع (URL):", placeholder="لینک RSS، کانال تلگرام، یوتیوب یا وب‌سایت...")
+            new_name = st.text_input("نام دلخواه:")
+            if st.form_submit_button("شناسایی و افزودن"):
+                if new_link and new_name:
+                    with st.spinner("در حال کاوش..."):
+                        msg = detect_and_add_source(new_link, new_name)
+                        st.success(msg)
+                        time.sleep(2)
+                        st.rerun()
+                else: st.error("نام و لینک الزامی است.")
+        st.divider()
+        st.write("منابع فعلی:")
+        try: st.dataframe(pd.DataFrame(sh.worksheet("Config").get_all_records()))
+        except: pass
 
 # ----------------- 2. Scenario Studio -----------------
 elif st.session_state.active_step == "Scenario Studio":
@@ -326,11 +330,9 @@ elif st.session_state.active_step == "Scenario Studio":
             pend = df.reset_index()
             idx = st.selectbox("انتخاب پروژه:", pend.index, index=len(pend)-1, format_func=lambda x: pend.loc[x, 'Project_Name'])
             row = pend.loc[idx]
-            
             style = st.radio("مود نویسنده:", ["پاورقی (سریال ترکی)", "جان کلام (تحلیلی)", "✨ پرامت آزاد (Custom)"], horizontal=True)
             custom_prompt = ""
             if style == "✨ پرامت آزاد (Custom)": custom_prompt = st.text_area("دستور اختصاصی:", "بازنویسی خلاقانه...")
-            
             if st.button("✨ نوشتن سناریو"):
                 with st.spinner("نویسنده در حال کار..."):
                     res = generate_script_gpt(row['Subtitle_Text'], style, custom_prompt)
