@@ -87,16 +87,15 @@ def analyze_and_generate_mix(images_bytes, user_instruction):
     except Exception as e: return None
 
 def generate_audio_flexible(text, voice_id, model_choice):
-    """تولید صدا با امکان انتخاب مدل (V3 Engine)"""
+    """تولید صدا با انتخاب مدل دقیق"""
     try:
-        safe_text = text[:3000] 
-        # نکته حیاتی: آدرس API همیشه v1 است، اما model_id نسخه موتور را تعیین می‌کند
+        safe_text = text[:5000] # مدل‌های جدید محدودیت کمتری دارند
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         headers = {"xi-api-key": st.secrets["elevenlabs"]["api_key"], "Content-Type": "application/json"}
         
         data = {
             "text": safe_text, 
-            "model_id": model_choice, # اینجا مدل انتخابی کاربر (مثل turbo_v2_5) قرار می‌گیرد
+            "model_id": model_choice, # استفاده از مدل انتخابی کاربر
             "voice_settings": {
                 "stability": 0.50,
                 "similarity_boost": 0.80,
@@ -238,13 +237,15 @@ elif st.session_state.active_step == "Scenario Studio":
 # ----------------- 3. Sound Factory -----------------
 elif st.session_state.active_step == "Sound Factory":
     st.header("🎙️ کارخانه صدا")
+    st.info("مجهز به موتورهای نسل جدید ElevenLabs")
     
-    # >>> منوی انتخاب موتور صدا (V3) <<<
+    # >>> منوی انتخاب موتور صدا (با گزینه V3) <<<
     model_options = {
-        "Multilingual v2 (Best for Farsi/Story)": "eleven_multilingual_v2",
-        "Turbo v2.5 (Fast/New V3)": "eleven_turbo_v2_5",
-        "Flash v2.5 (Ultra Fast)": "eleven_flash_v2_5"
+        "Eleven V3 / Turbo v2.5 (جدید و سریع)": "eleven_turbo_v2_5",
+        "Multilingual v2 (بهترین کیفیت داستانی)": "eleven_multilingual_v2",
+        "Flash v2.5 (فوق سریع)": "eleven_flash_v2_5"
     }
+    
     selected_model_label = st.selectbox("انتخاب موتور هوش مصنوعی صدا:", list(model_options.keys()))
     selected_model_id = model_options[selected_model_label]
     
@@ -271,7 +272,7 @@ elif st.session_state.active_step == "Sound Factory":
                             aud, err = generate_audio_flexible(txt, row['Voice_ID'], selected_model_id)
                             if aud:
                                 st.audio(aud, format='audio/mp3')
-                                st.success(f"✅ تولید شد با مدل: {selected_model_id}")
+                                st.success(f"✅ تولید شد! (مدل: {selected_model_id})")
                                 time.sleep(2); go_to("Art Gallery")
                             else: st.error(err)
         except: pass
@@ -294,7 +295,7 @@ elif st.session_state.active_step == "Sound Factory":
                     aud_free, err_free = generate_audio_flexible(free_text, voice_id_free, selected_model_id)
                     if aud_free:
                         st.audio(aud_free, format='audio/mp3')
-                        st.success("✅ صدا آماده است!")
+                        st.success(f"✅ صدا آماده است! (مدل: {selected_model_id})")
                     else: st.error(err_free)
 
 # ----------------- 4. Art Gallery -----------------
@@ -302,8 +303,8 @@ elif st.session_state.active_step == "Art Gallery":
     st.header("🎨 گالری تصاویر")
     tab_auto, tab_mix = st.tabs(["📸 شکار خودکار", "📂 ترکیب دستی"])
     with tab_auto:
-         st.write("سیستم خودکار (نیازمند VPN سرور)") 
-         # (کد قبلی اینجا محفوظ است)
+         st.write("سیستم خودکار (نیازمند VPN)") 
+         # کد قبلی...
          
     with tab_mix:
         st.subheader("آپلود چند تصویر + دستور خلاقانه")
@@ -317,7 +318,7 @@ elif st.session_state.active_step == "Art Gallery":
                     st.image(url)
                     st.markdown(f"[⬇️ دانلود]({url})")
                     if st.button("رفتن به تدوین"): go_to("Montage Table")
-                else: st.error("خطا در تولید.")
+                else: st.error("خطا.")
 
 # ----------------- 5. Montage Table -----------------
 elif st.session_state.active_step == "Montage Table":
