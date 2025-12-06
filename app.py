@@ -12,15 +12,37 @@ import base64
 import cv2 
 import numpy as np
 import random
+import time
+from proglog import ProgressBarLogger # برای نوار پیشرفت
 
-# --- چک کردن ابزار تدوین ---
+# --- تنظیمات اولیه ---
+st.set_page_config(page_title="Jamshid Panel", page_icon="👑", layout="wide")
+
+# کلاس لاگر برای نوار پیشرفت MoviePy
+class StreamlitLogger(ProgressBarLogger):
+    def callback(self, **changes):
+        for (parameter, value) in changes.items():
+            pass # نادیده گرفتن پیام‌های متنی
+    def bars_callback(self, bar, attr, value, old_value=None):
+        percentage = (value / self.bars[bar]['total']) * 100
+        if bar == 't': # فقط نوار زمان اصلی
+            st.session_state['progress_bar'].progress(int(percentage))
+            st.session_state['progress_text'].text(f"در حال رندر: {int(percentage)}%")
+
+# چک کردن ابزار تدوین
 try:
     from moviepy.editor import ImageClip, AudioFileClip
     HAS_MOVIEPY = True
 except ImportError:
     HAS_MOVIEPY = False
 
-st.set_page_config(page_title="Jamshid Panel", page_icon="👑", layout="wide")
+# --- مدیریت ناوبری هوشمند ---
+if 'active_step' not in st.session_state:
+    st.session_state.active_step = "News Room"
+
+def go_to(step_name):
+    st.session_state.active_step = step_name
+    st.rerun()
 
 # --- 1. اتصال به دیتابیس ---
 @st.cache_resource
@@ -58,97 +80,78 @@ def generate_script_gpt(text, project_type):
     except Exception as e: return f"خطای OpenAI: {e}"
 
 def capture_frames_from_youtube(video_url, num_frames=6):
-    """تلاش برای شکار فریم با تنظیمات ضد ربات"""
     video_path = "temp_capture.mp4"
     try:
-        ydl_opts = {
-            'format': 'worst[ext=mp4]', 
-            'outtmpl': video_path,
-            'quiet': True,
-            'no_warnings': True,
-            # تلاش برای دور زدن ربات‌یاب با هدرهای مرورگر واقعی
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-            }
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
+        ydl_opts = {'format': 'worst[ext=mp4]', 'outtmpl': video_path, 'quiet': True, 'no_warnings': True,
+                    'http_headers': {'User-Agent': 'Mozilla/5.0'}}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.download([video_url])
         
         cap = cv2.VideoCapture(video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames < 100: return "ویدئو خیلی کوتاه یا ناقص دانلود شده."
-
-        margin = total_frames // 10
-        random_indices = sorted(random.sample(range(margin, total_frames - margin), num_frames))
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total < 100: return "ویدئو ناقص است."
         
-        frames_bytes = []
-        for idx in random_indices:
+        frames = []
+        indices = sorted(random.sample(range(total//10, total - total//10), num_frames))
+        for idx in indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ret, frame = cap.read()
             if ret:
-                _, buffer = cv2.imencode('.jpg', frame)
-                frames_bytes.append(buffer.tobytes())
-        
+                _, buf = cv2.imencode('.jpg', frame)
+                frames.append(buf.tobytes())
         cap.release()
         if os.path.exists(video_path): os.remove(video_path)
-        return frames_bytes
-        
+        return frames
     except Exception as e:
         if os.path.exists(video_path): os.remove(video_path)
-        return f"خطای یوتیوب (تحریم سرور): {str(e)}"
+        return str(e)
 
-def analyze_and_generate_mix(img1_bytes, img2_bytes):
+def analyze_and_generate_mix(img1, img2):
     try:
         client = OpenAI(api_key=st.secrets["openai"]["api_key"])
-        b64_img1 = base64.b64encode(img1_bytes).decode('utf-8')
-        b64_img2 = base64.b64encode(img2_bytes).decode('utf-8')
+        b1 = base64.b64encode(img1).decode('utf-8')
+        b2 = base64.b64encode(img2).decode('utf-8')
         
-        vision_response = client.chat.completions.create(
+        vis_resp = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are an art director. Create a DALL-E 3 prompt based on these two TV show screenshots."},
-                {"role": "user", "content": [
-                    {"type": "text", "text": "Combine these two scenes into one artistic composition description. Style: Pastel Painting, Cinematic, 16:9 Aspect Ratio. No Text."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img1}"}},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img2}"}}
-                ]}
+                {"role": "system", "content": "Art director. Merge scenes."},
+                {"role": "user", "content": [{"type": "text", "text": "Merge these two TV scenes into one pastel painting poster. 16:9 aspect ratio."}, 
+                                             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b1}"}},
+                                             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b2}"}}]}
             ], max_tokens=150
         )
-        mix_prompt = vision_response.choices[0].message.content
-        
-        image_response = client.images.generate(
-            model="dall-e-3", prompt=f"{mix_prompt}. Aspect Ratio 16:9. Style: Pastel Painting.",
-            size="1792x1024", quality="standard", n=1
-        )
-        return image_response.data[0].url, mix_prompt
-    except Exception as e: return None, str(e)
+        prompt = vis_resp.choices[0].message.content
+        img_resp = client.images.generate(model="dall-e-3", prompt=f"{prompt}. 16:9 Pastel Style.", size="1792x1024", n=1)
+        return img_resp.data[0].url
+    except Exception as e: return None
 
 def get_elevenlabs_voices():
     voices = {"Nima (VIP)": "ZHv32fN3Y8F0CxAiAoLA"}
     try:
         url = "https://api.elevenlabs.io/v1/voices"
         headers = {"xi-api-key": st.secrets["elevenlabs"]["api_key"]}
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            api_voices = {v['name']: v['voice_id'] for v in response.json()['voices']}
-            voices.update(api_voices)
+        r = requests.get(url, headers=headers)
+        if r.status_code == 200:
+            voices.update({v['name']: v['voice_id'] for v in r.json()['voices']})
     except: pass
     return voices
 
 def generate_audio_v3(text, voice_id):
     try:
-        safe_text = text[:2900] 
+        safe_text = text[:2900]
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         headers = {"xi-api-key": st.secrets["elevenlabs"]["api_key"], "Content-Type": "application/json"}
+        
+        # >>> دیکتاتوری جمشید: فقط V3 (Multilingual v2) <<<
         data = {
-            "text": safe_text, "model_id": "eleven_multilingual_v2", 
-            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+            "text": safe_text,
+            "model_id": "eleven_multilingual_v2", # این همان مدلی است که همه به عنوان V3 با کیفیت می‌شناسند
+            "voice_settings": {"stability": 0.5, "similarity_boost": 0.8}
         }
-        response = requests.post(url, json=data, headers=headers)
-        if response.status_code == 200: return response.content, None
-        else: return None, response.text
+        
+        r = requests.post(url, json=data, headers=headers)
+        if r.status_code == 200: return r.content, None
+        else: return None, r.text
     except Exception as e: return None, str(e)
 
 # --- توابع کمکی ---
@@ -168,149 +171,181 @@ def download_transcript_heavy(url):
         return None
     except: return None
 
-# --- UI ---
+# --- UI: منوی کناری هوشمند ---
 st.title("👑 اتاق فرمان جمشید")
-tab_news, tab_story, tab_sound, tab_art, tab_montage, tab_config = st.tabs(["📰 اخبار", "✍️ سناریو", "🎙️ صدا", "🎨 گالری (ترکیبی)", "🎬 تدوین", "⚙️ تنظیمات"])
 
-with tab_news:
-    if st.button("🔄 بروزرسانی"):
+# منوی ناوبری (با قابلیت تغییر توسط کد)
+steps = ["News Room", "Scenario Studio", "Sound Factory", "Art Gallery", "Montage Table", "Settings"]
+# اگر در session state نباشد، اولی را بگذار
+if st.session_state.active_step not in steps: st.session_state.active_step = steps[0]
+
+# نمایش منوی رادیویی (که وضعیتش با session state سینک است)
+selected_step = st.sidebar.radio("مراحل تولید:", steps, index=steps.index(st.session_state.active_step))
+
+# اگر کاربر دستی تغییر داد، state را آپدیت کن
+if selected_step != st.session_state.active_step:
+    st.session_state.active_step = selected_step
+    st.rerun()
+
+# ----------------- 1. News Room -----------------
+if st.session_state.active_step == "News Room":
+    st.header("📰 اتاق خبر")
+    if st.button("🔄 دریافت اخبار و رفتن به سناریو"):
         ws_conf = sh.worksheet("Config")
         new_news = []
         for item in ws_conf.get_all_records():
             if item['Type'] == 'RSS' and item['Value']: new_news.extend(fetch_rss_feed(item['Value']))
         if new_news:
             sh.worksheet("News_Feed").append_rows([n + [""] for n in new_news])
-            st.success("اخبار جدید!")
-            st.rerun()
+            st.toast("اخبار دریافت شد! در حال انتقال به سناریو...", icon="🚀")
+            time.sleep(1)
+            go_to("Scenario Studio") # پرش خودکار
+        else: st.warning("خبر جدیدی نبود.")
+            
     try: st.dataframe(pd.DataFrame(sh.worksheet("News_Feed").get_all_records()), use_container_width=True)
     except: pass
 
-with tab_story:
-    with st.form("story"):
+# ----------------- 2. Scenario Studio -----------------
+elif st.session_state.active_step == "Scenario Studio":
+    st.header("✍️ استودیو سناریو")
+    
+    # فرم ورودی
+    with st.expander("ثبت پروژه جدید", expanded=True):
         c1, c2 = st.columns([3, 1])
         v_url = c1.text_input("لینک یوتیوب:")
-        manual = c1.text_area("متن دستی:", height=100)
+        manual = c1.text_area("متن دستی:")
         p_name = c2.text_input("نام پروژه:")
         voice_dict = get_elevenlabs_voices()
-        idx = list(voice_dict.keys()).index("Nima (VIP)") if "Nima (VIP)" in voice_dict else 0
-        v_name = c2.selectbox("صدا:", list(voice_dict.keys()), index=idx)
-        if st.form_submit_button("ثبت"):
+        v_name = c2.selectbox("صدا:", list(voice_dict.keys()))
+        if st.button("ثبت پروژه"):
             txt = manual if manual else (download_transcript_heavy(v_url) if v_url else "")
             vid = voice_dict.get(v_name, "")
             if txt:
                 sh.worksheet("Video_Factory").append_row([p_name, v_url, txt, "", vid, "Raw", ""])
                 st.success("ثبت شد.")
             else: st.error("خطا.")
+
     st.divider()
+    # لیست نوشتن
     try:
         ws_vid = sh.worksheet("Video_Factory")
         df = pd.DataFrame(ws_vid.get_all_records())
         if not df.empty:
             pend = df.reset_index()
-            idx = st.selectbox("انتخاب پروژه:", pend.index, format_func=lambda x: pend.loc[x, 'Project_Name'])
+            # انتخاب خودکار آخرین پروژه ثبت شده
+            last_idx = len(pend) - 1
+            idx = st.selectbox("انتخاب پروژه:", pend.index, index=last_idx, format_func=lambda x: pend.loc[x, 'Project_Name'])
             row = pend.loc[idx]
+            
             style = st.radio("سبک:", ["پاورقی", "جان کلام"], horizontal=True)
-            if st.button("✨ نوشتن"):
-                res = generate_script_gpt(row['Subtitle_Text'], style)
-                cell = ws_vid.find(row['Project_Name'])
-                ws_vid.update_cell(cell.row, 4, res)
-                st.success("نوشته شد.")
+            if st.button("✨ نوشتن و رفتن به صدا"):
+                with st.spinner("نویسنده در حال کار..."):
+                    res = generate_script_gpt(row['Subtitle_Text'], style)
+                    cell = ws_vid.find(row['Project_Name'])
+                    ws_vid.update_cell(cell.row, 4, res)
+                    st.toast("سناریو آماده شد! انتقال به کارخانه صدا...", icon="🎙️")
+                    time.sleep(1)
+                    go_to("Sound Factory") # پرش خودکار
     except: pass
 
-with tab_sound:
+# ----------------- 3. Sound Factory -----------------
+elif st.session_state.active_step == "Sound Factory":
+    st.header("🎙️ کارخانه صدا (Eleven V3 Only)")
     try:
         ws_vid = sh.worksheet("Video_Factory")
         df = pd.DataFrame(ws_vid.get_all_records())
         if not df.empty:
-            rdy = df[df['Script'] != ""].reset_index()
-            if not rdy.empty:
-                idx = st.selectbox("پروژه صوتی:", rdy.index, format_func=lambda x: rdy.loc[x, 'Project_Name'])
-                row = rdy.loc[idx]
-                txt = st.text_area("متن نهایی:", row['Script'], height=150)
-                if st.button("🎙️ تولید"):
-                    aud, err = generate_audio_v3(txt, row['Voice_ID'])
-                    if aud: st.audio(aud); st.success("دانلود کنید.")
-                    else: st.error(err)
+            ready = df[df['Script'] != ""].reset_index()
+            if not ready.empty:
+                # انتخاب خودکار آخرین مورد
+                last_r_idx = len(ready) - 1
+                idx = st.selectbox("پروژه صوتی:", ready.index, index=last_r_idx, format_func=lambda x: ready.loc[x, 'Project_Name'])
+                row = ready.loc[idx]
+                
+                txt = st.text_area("ویرایش نهایی متن:", row['Script'], height=200)
+                
+                if st.button("🎙️ تولید صدا و رفتن به گالری"):
+                    with st.spinner("جمشید در حال ضبط (V3)..."):
+                        if txt != row['Script']:
+                            cell = ws_vid.find(row['Project_Name'])
+                            ws_vid.update_cell(cell.row, 4, txt)
+                        
+                        aud, err = generate_audio_v3(txt, row['Voice_ID'])
+                        if aud:
+                            st.audio(aud)
+                            st.success("صدا تولید شد! دانلود کنید.")
+                            st.info("حالا برای ساخت پوستر به گالری بروید.")
+                            time.sleep(2)
+                            go_to("Art Gallery") # پرش خودکار
+                        else: st.error(err)
     except: pass
 
-# --- تب گالری (ترکیبی) ---
-with tab_art:
-    st.header("۳. آتلیه نقاشی 🎨")
+# ----------------- 4. Art Gallery -----------------
+elif st.session_state.active_step == "Art Gallery":
+    st.header("🎨 گالری تصاویر")
+    mode = st.radio("مود:", ["آپلود دستی (پیشنهادی)", "اتوماتیک"], horizontal=True)
     
-    # انتخاب منبع تصاویر: اتوماتیک یا دستی
-    source_type = st.radio("روش دریافت تصاویر:", ["📸 شکار اتوماتیک (یوتیوب)", "📂 آپلود دستی (مطمئن)"], horizontal=True)
+    if mode == "آپلود دستی (پیشنهادی)":
+        files = st.file_uploader("۶ تصویر آپلود کنید:", accept_multiple_files=True)
+        if files and len(files)==6 and st.button("ترکیب و ساخت پوستر"):
+            frames = [f.getvalue() for f in files]
+            pairs = [(frames[0], frames[1]), (frames[2], frames[3]), (frames[4], frames[5])]
+            cols = st.columns(3)
+            for i, (im1, im2) in enumerate(pairs):
+                with cols[i]:
+                    with st.spinner(f"نقاشی {i+1}..."):
+                        url = analyze_and_generate_mix(im1, im2)
+                        if url: st.image(url, use_container_width=True); st.markdown(f"[دانلود]({url})")
+            st.success("تصاویر آماده شد! به میز تدوین بروید.")
+            if st.button("رفتن به تدوین"): go_to("Montage Table")
+
+# ----------------- 5. Montage Table -----------------
+elif st.session_state.active_step == "Montage Table":
+    st.header("🎬 میز تدوین")
     
-    try:
-        ws_vid = sh.worksheet("Video_Factory")
-        df_vid = pd.DataFrame(ws_vid.get_all_records())
-        if not df_vid.empty:
-            ready_art = df_vid[df_vid['Script'] != ""].reset_index()
-            
-            if not ready_art.empty:
-                sel_idx_art = st.selectbox("انتخاب پروژه برای طراحی:", ready_art.index, format_func=lambda x: f"{ready_art.loc[x, 'Project_Name']}")
-                row_art = ready_art.loc[sel_idx_art]
-                
-                # حالت ۱: اتوماتیک
-                if source_type == "📸 شکار اتوماتیک (یوتیوب)":
-                    if st.button("شروع شکار خودکار"):
-                        video_link = row_art['Youtube_Link']
-                        if not video_link: st.error("لینک یوتیوب موجود نیست.")
-                        else:
-                            status = st.status("در حال تلاش...", expanded=True)
-                            frames = capture_frames_from_youtube(video_link, num_frames=6)
-                            
-                            if isinstance(frames, str): # اگر ارور داد
-                                status.update(label="ناموفق", state="error")
-                                st.error(frames)
-                                st.info("💡 پیشنهاد: چون سرور ابری تحریم است، لطفاً از گزینه «آپلود دستی» استفاده کنید.")
-                            else:
-                                # ادامه پروسه اتوماتیک...
-                                status.write("✅ تصاویر شکار شد. در حال نقاشی...")
-                                # (اینجا کد نقاشی تکرار می‌شود)
-                                # ...
-                
-                # حالت ۲: دستی (پشتیبان)
-                else:
-                    st.info("۶ تصویر (اسکرین‌شات) از سریال را اینجا آپلود کنید.")
-                    uploaded_files = st.file_uploader("انتخاب تصاویر:", accept_multiple_files=True, type=['jpg', 'png'])
-                    
-                    if uploaded_files and len(uploaded_files) == 6:
-                        if st.button("🎨 شروع ترکیب و نقاشی"):
-                            # خواندن فایل‌ها
-                            frames = [f.getvalue() for f in uploaded_files]
-                            
-                            pairs = [(frames[0], frames[1]), (frames[2], frames[3]), (frames[4], frames[5])]
-                            cols = st.columns(3)
-                            
-                            for i, (img1, img2) in enumerate(pairs):
-                                with cols[i]:
-                                    with st.spinner(f"نقاشی پوستر {i+1}..."):
-                                        url, prompt = analyze_and_generate_mix(img1, img2)
-                                        if url:
-                                            st.image(url, caption=f"پوستر {i+1}", use_container_width=True)
-                                            st.markdown(f"[⬇️ دانلود]({url})")
-                                        else: st.error(prompt)
-                            st.success("تمام شد!")
-                    elif uploaded_files:
-                        st.warning(f"شما {len(uploaded_files)} فایل انتخاب کردید. دقیقاً ۶ تا لازم است.")
-
-            else: st.info("پروژه آماده نداریم.")
-    except: pass
-
-with tab_montage:
     if HAS_MOVIEPY:
-        img = st.file_uploader("تصویر:", type=["jpg","png"])
-        aud = st.file_uploader("صدا:", type=["mp3"])
-        if img and aud and st.button("🎬 رندر"):
-            with open("t.jpg","wb") as f: f.write(img.getbuffer())
-            with open("t.mp3","wb") as f: f.write(aud.getbuffer())
-            ac = AudioFileClip("t.mp3")
-            vc = ImageClip("t.jpg").set_duration(ac.duration).set_audio(ac)
-            vc.write_videofile("o.mp4", fps=24, codec="libx264", audio_codec="aac")
-            st.video("o.mp4")
-            with open("o.mp4","rb") as f: st.download_button("⬇️", f, "video.mp4")
-    else: st.warning("نصب نیست.")
+        img = st.file_uploader("تصویر نهایی:", type=["jpg","png"])
+        aud = st.file_uploader("صدا نهایی:", type=["mp3"])
+        
+        if img and aud:
+            if st.button("🎬 رندر نهایی"):
+                # محل نمایش نوار پیشرفت
+                st.session_state['progress_text'] = st.empty()
+                st.session_state['progress_bar'] = st.progress(0)
+                
+                try:
+                    with open("t.jpg","wb") as f: f.write(img.getbuffer())
+                    with open("t.mp3","wb") as f: f.write(aud.getbuffer())
+                    
+                    ac = AudioFileClip("t.mp3")
+                    vc = ImageClip("t.jpg").set_duration(ac.duration).set_audio(ac)
+                    
+                    # اتصال لاگر به MoviePy
+                    logger = StreamlitLogger()
+                    vc.write_videofile("o.mp4", fps=24, codec="libx264", audio_codec="aac", logger=logger)
+                    
+                    st.success("رندر تمام شد! 🎉")
+                    st.video("o.mp4")
+                    with open("o.mp4","rb") as f:
+                        st.download_button("⬇️ دانلود ویدئو", f, "final_video.mp4")
+                    
+                    # دکمه ارسال به تلگرام (ایده جدید)
+                    st.divider()
+                    st.markdown("### ✈️ ارسال سریع")
+                    tg_token = st.text_input("توکن ربات تلگرام (اختیاری):")
+                    chat_id = st.text_input("Chat ID شما:")
+                    if tg_token and chat_id and st.button("ارسال به تلگرام"):
+                        with open("o.mp4", "rb") as video:
+                            url = f"https://api.telegram.org/bot{tg_token}/sendVideo"
+                            files = {'video': video}
+                            data = {'chat_id': chat_id}
+                            r = requests.post(url, files=files, data=data)
+                            if r.status_code == 200: st.success("ارسال شد!")
+                            else: st.error(r.text)
 
-with tab_config:
-    try: st.dataframe(pd.DataFrame(sh.worksheet("Config").get_all_records()))
-    except: pass
+                except Exception as e: st.error(f"خطا: {e}")
+    else: st.warning("MoviePy نصب نیست.")
+
+# ----------------- 6. Settings -----------------
+elif st.session_state.active_step == "Settings":
+    st.dataframe(pd.DataFrame(sh.worksheet("Config").get_all_records()))
