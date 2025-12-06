@@ -4,3 +4,4 @@ google-auth
 pandas
 feedparser
 youtube-transcript-api
+yt-dlp
