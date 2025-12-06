@@ -112,13 +112,15 @@ def get_elevenlabs_voices():
     except: pass
     return voices
 
-# --- توابع شکارچی منبع (اصلاح شده) ---
+# --- توابع شکارچی منبع ---
 def find_rss_link(url):
     try:
         r = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
         soup = BeautifulSoup(r.text, 'html.parser')
         rss_link = soup.find('link', type='application/rss+xml')
         if rss_link: return rss_link.get('href')
+        atom_link = soup.find('link', type='application/atom+xml')
+        if atom_link: return atom_link.get('href')
     except: pass
     return None
 
@@ -139,11 +141,9 @@ def detect_and_add_source(url, name):
     final_value = clean_url
     message = ""
 
-    # RSS مستقیم
     is_direct_rss = False
     try:
-        # تست با هدر مرورگر
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(clean_url, headers=headers, timeout=5)
         f = feedparser.parse(r.content)
         if len(f.entries) > 0 or f.version: is_direct_rss = True
@@ -180,7 +180,7 @@ def detect_and_add_source(url, name):
     sh.worksheet("Config").append_row([source_type, name, final_value, ""])
     return message
 
-# --- توابع خبرخوان (قدرتمند شده) ---
+# --- توابع خبرخوان (با هدرهای قوی) ---
 def fetch_website_meta(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -206,24 +206,18 @@ def scrape_telegram_channel(url):
     except: return []
 
 def fetch_rss_feed(rss_url):
-    """خبرخوان با کارت شناسایی مرورگر (ضد بلاک)"""
     try:
-        # هدرهای کامل برای فریب دادن سایت‌های حساس مثل دیجیاتو و ایسنا
         headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'application/rss+xml, application/xml, text/xml, */*'
         }
-        
         response = requests.get(rss_url, headers=headers, timeout=10)
-        # تغذیه دستی به فیدپارسر
         feed = feedparser.parse(response.content)
         
         items = []
         for entry in feed.entries[:5]:
-            # تاریخ
             pub_date = datetime.now().strftime("%Y-%m-%d %H:%M")
             if 'published' in entry: pub_date = entry.published[:20]
-            
             items.append([
                 pub_date,
                 feed.feed.get('title', 'Unknown'),
@@ -232,9 +226,7 @@ def fetch_rss_feed(rss_url):
                 "New"
             ])
         return items
-    except Exception as e:
-        print(f"Error fetching {rss_url}: {e}") # فقط برای لاگ
-        return []
+    except: return []
 
 def download_transcript_heavy(url):
     try:
@@ -266,8 +258,14 @@ if st.session_state.active_step == "News Room":
                 ws_conf = sh.worksheet("Config")
                 ws_news = sh.worksheet("News_Feed")
                 
-                # خواندن لینک‌های قدیمی برای جلوگیری از تکرار
-                existing_links = set(ws_news.col_values(4))
+                # خواندن لینک‌های قدیمی
+                try:
+                    # استفاده از روش امن‌تر برای گرفتن ستون لینک (معمولا ستون D یا 4)
+                    existing_data = ws_news.get_all_values()
+                    # فرض می‌کنیم ردیف اول هدر است و ستون 4 لینک است (index 3)
+                    existing_links = set([row[3] for row in existing_data[1:] if len(row) > 3])
+                except:
+                    existing_links = set()
                 
                 temp_list = []
                 configs = ws_conf.get_all_records()
@@ -276,26 +274,37 @@ if st.session_state.active_step == "News Room":
                 new_count = 0
                 dup_count = 0
                 
+                total = len(configs)
+                if total == 0: total = 1 # جلوگیری از تقسیم بر صفر
+
                 for i, item in enumerate(configs):
-                    bar.progress((i+1)/len(configs), f"چک کردن: {item['Name']}")
+                    # >>> اصلاح مهم: استفاده از .get برای جلوگیری از KeyError <<<
+                    src_name = item.get('Name', 'منبع ناشناس')
+                    src_type = item.get('Type', '')
+                    src_val = item.get('Value', '')
+                    
+                    bar.progress((i+1)/total, f"چک کردن: {src_name}")
+                    
                     fetched_items = []
                     try:
-                        if item['Type'] in ['RSS', 'Youtube_Channel']:
-                            fetched_items = fetch_rss_feed(item['Value'])
-                        elif item['Type'] == 'Telegram':
-                            fetched_items = scrape_telegram_channel(item['Value'])
-                        elif item['Type'] == 'Website':
-                            fetched_items = fetch_website_meta(item['Value'])
+                        if src_type in ['RSS', 'Youtube_Channel'] and src_val:
+                            fetched_items = fetch_rss_feed(src_val)
+                        elif src_type == 'Telegram' and src_val:
+                            fetched_items = scrape_telegram_channel(src_val)
+                        elif src_type == 'Website' and src_val:
+                            fetched_items = fetch_website_meta(src_val)
                     except: pass
                     
                     for news in fetched_items:
-                        link = news[3]
-                        if link not in existing_links:
-                            temp_list.append(news)
-                            existing_links.add(link)
-                            new_count += 1
-                        else:
-                            dup_count += 1
+                        # بررسی ایمن وجود لینک
+                        if len(news) > 3:
+                            link = news[3]
+                            if link not in existing_links:
+                                temp_list.append(news)
+                                existing_links.add(link)
+                                new_count += 1
+                            else:
+                                dup_count += 1
 
                 bar.empty()
                 st.session_state.temp_news = temp_list
