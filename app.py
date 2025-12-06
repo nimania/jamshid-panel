@@ -114,14 +114,11 @@ def get_elevenlabs_voices():
 
 # --- توابع شکارچی منبع (اصلاح شده) ---
 def find_rss_link(url):
-    """جستجوی لینک RSS در کدهای صفحه"""
     try:
-        r = requests.get(url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
+        r = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
         soup = BeautifulSoup(r.text, 'html.parser')
         rss_link = soup.find('link', type='application/rss+xml')
         if rss_link: return rss_link.get('href')
-        atom_link = soup.find('link', type='application/atom+xml')
-        if atom_link: return atom_link.get('href')
     except: pass
     return None
 
@@ -137,71 +134,57 @@ def fetch_youtube_channel_rss(url):
     return None
 
 def detect_and_add_source(url, name):
-    """مغز متفکر شناسایی منبع (با رفع باگ)"""
     clean_url = url.strip()
     source_type = "Website" 
     final_value = clean_url
     message = ""
 
-    # 1. آیا خودِ لینک یک RSS است؟ (چک کردن مستقیم با feedparser)
+    # RSS مستقیم
     is_direct_rss = False
     try:
-        f = feedparser.parse(clean_url)
-        # اگر ورودی داشت یعنی فید سالم است
-        if len(f.entries) > 0 or f.version:
-            is_direct_rss = True
+        # تست با هدر مرورگر
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        r = requests.get(clean_url, headers=headers, timeout=5)
+        f = feedparser.parse(r.content)
+        if len(f.entries) > 0 or f.version: is_direct_rss = True
     except: pass
 
     if is_direct_rss:
         source_type = "RSS"
         final_value = clean_url
         message = "✅ لینک مستقیم RSS تایید شد."
-
-    # 2. اگر یوتیوب بود
     elif "youtube.com" in clean_url or "youtu.be" in clean_url:
         rss = fetch_youtube_channel_rss(clean_url)
         if rss:
             source_type = "Youtube_Channel"
             final_value = rss
             message = "✅ کانال یوتیوب شناسایی شد."
-        else:
-            message = "⚠️ لینک یوتیوب است اما RSS پیدا نشد."
-
-    # 3. اگر تلگرام بود
+        else: message = "⚠️ لینک یوتیوب است اما RSS پیدا نشد."
     elif "t.me" in clean_url:
         source_type = "Telegram"
         if "/s/" not in clean_url and "t.me/" in clean_url:
             username = clean_url.split("t.me/")[-1].replace("/", "")
             final_value = f"https://t.me/s/{username}"
         message = "✅ کانال تلگرام شناسایی شد."
-
-    # 4. توییتر/اینستاگرام
     elif "twitter.com" in clean_url or "x.com" in clean_url or "instagram.com" in clean_url:
         source_type = "Website"
         message = "⚠️ توییتر/اینستاگرام RSS ندارند. به عنوان وب‌سایت ذخیره شد."
-
-    # 5. سایر وب‌سایت‌ها (اگر RSS مستقیم نبود، جستجو کن)
     else:
         rss = find_rss_link(clean_url)
         if rss:
             source_type = "RSS"
-            if rss.startswith("/"):
-                from urllib.parse import urlparse
-                parsed = urlparse(clean_url)
-                final_value = f"{parsed.scheme}://{parsed.netloc}{rss}"
-            else:
-                final_value = rss
-            message = "✅ RSS در صفحه سایت پیدا شد."
-        else:
-            message = "ℹ️ RSS پیدا نشد. به عنوان وب‌سایت معمولی ذخیره شد."
+            final_value = f"{clean_url.rstrip('/')}{rss}" if rss.startswith("/") else rss
+            message = "✅ RSS سایت پیدا شد."
+        else: message = "ℹ️ RSS پیدا نشد (وب‌سایت معمولی)."
 
     sh.worksheet("Config").append_row([source_type, name, final_value, ""])
     return message
 
-# --- توابع خبرخوان ---
+# --- توابع خبرخوان (قدرتمند شده) ---
 def fetch_website_meta(url):
     try:
-        r = requests.get(url, timeout=5)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        r = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(r.text, 'html.parser')
         title = soup.title.string if soup.title else url
         return [[datetime.now().strftime("%Y-%m-%d %H:%M"), "Website", title, url, "New"]]
@@ -223,10 +206,35 @@ def scrape_telegram_channel(url):
     except: return []
 
 def fetch_rss_feed(rss_url):
+    """خبرخوان با کارت شناسایی مرورگر (ضد بلاک)"""
     try:
-        feed = feedparser.parse(rss_url)
-        return [[datetime.now().strftime("%Y-%m-%d %H:%M"), feed.feed.get('title', 'Unknown'), entry.title, entry.link, "New"] for entry in feed.entries[:5]]
-    except: return []
+        # هدرهای کامل برای فریب دادن سایت‌های حساس مثل دیجیاتو و ایسنا
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/rss+xml, application/xml, text/xml, */*'
+        }
+        
+        response = requests.get(rss_url, headers=headers, timeout=10)
+        # تغذیه دستی به فیدپارسر
+        feed = feedparser.parse(response.content)
+        
+        items = []
+        for entry in feed.entries[:5]:
+            # تاریخ
+            pub_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+            if 'published' in entry: pub_date = entry.published[:20]
+            
+            items.append([
+                pub_date,
+                feed.feed.get('title', 'Unknown'),
+                entry.get('title', 'No Title'),
+                entry.get('link', ''),
+                "New"
+            ])
+        return items
+    except Exception as e:
+        print(f"Error fetching {rss_url}: {e}") # فقط برای لاگ
+        return []
 
 def download_transcript_heavy(url):
     try:
@@ -254,38 +262,63 @@ if st.session_state.active_step == "News Room":
     with tab_feed:
         col1, col2 = st.columns([3, 1])
         with col1:
-            if st.button("🔄 دریافت اخبار از تمام منابع"):
+            if st.button("🔄 دریافت اخبار جدید (فیلتر هوشمند)"):
                 ws_conf = sh.worksheet("Config")
+                ws_news = sh.worksheet("News_Feed")
+                
+                # خواندن لینک‌های قدیمی برای جلوگیری از تکرار
+                existing_links = set(ws_news.col_values(4))
+                
                 temp_list = []
                 configs = ws_conf.get_all_records()
                 bar = st.progress(0, "شروع...")
+                
+                new_count = 0
+                dup_count = 0
+                
                 for i, item in enumerate(configs):
                     bar.progress((i+1)/len(configs), f"چک کردن: {item['Name']}")
+                    fetched_items = []
                     try:
                         if item['Type'] in ['RSS', 'Youtube_Channel']:
-                            temp_list.extend(fetch_rss_feed(item['Value']))
+                            fetched_items = fetch_rss_feed(item['Value'])
                         elif item['Type'] == 'Telegram':
-                            temp_list.extend(scrape_telegram_channel(item['Value']))
+                            fetched_items = scrape_telegram_channel(item['Value'])
                         elif item['Type'] == 'Website':
-                            temp_list.extend(fetch_website_meta(item['Value']))
+                            fetched_items = fetch_website_meta(item['Value'])
                     except: pass
+                    
+                    for news in fetched_items:
+                        link = news[3]
+                        if link not in existing_links:
+                            temp_list.append(news)
+                            existing_links.add(link)
+                            new_count += 1
+                        else:
+                            dup_count += 1
+
                 bar.empty()
                 st.session_state.temp_news = temp_list
-                if temp_list: st.success(f"{len(temp_list)} خبر جدید!")
-                else: st.warning("خبر جدیدی نیست.")
+                
+                if new_count > 0:
+                    st.success(f"{new_count} خبر جدید پیدا شد! ({dup_count} تکراری حذف شد)")
+                else:
+                    st.info(f"خبر جدیدی نیست. ({dup_count} مورد تکراری یافت شد)")
 
         if st.session_state.temp_news:
-            st.write("### لیست خبرها (قابل ویرایش)")
+            st.write("### اخبار جدید (تایید کنید)")
             df_temp = pd.DataFrame(st.session_state.temp_news, columns=["Date", "Source", "Title", "Link", "Status"])
             edited_df = st.data_editor(df_temp, num_rows="dynamic", use_container_width=True)
-            if st.button("💾 تایید و ذخیره"):
+            if st.button("💾 ذخیره در دیتابیس"):
                 final_data = edited_df.values.tolist()
                 if final_data:
                     sh.worksheet("News_Feed").append_rows([r + [""] for r in final_data])
                     st.session_state.temp_news = []
                     st.success("ذخیره شد!"); time.sleep(1); go_to("Scenario Studio")
         else:
-            st.info("برای دریافت اخبار دکمه بالا را بزنید.")
+            with st.expander("مشاهده آرشیو اخبار قبلی"):
+                try: st.dataframe(pd.DataFrame(sh.worksheet("News_Feed").get_all_records()))
+                except: pass
 
     with tab_sources:
         st.subheader("معرفی منبع جدید به جمشید")
