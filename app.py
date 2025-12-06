@@ -1,81 +1,47 @@
 import streamlit as st
 import pandas as pd
 import gspread
-from google.oauth2.service_account import Credentials # کتابخانه جدید و بهتر
 
-# --- 1. تنظیمات صفحه ---
-st.set_page_config(
-    page_title="Jamshid Command Center",
-    page_icon="👑",
-    layout="wide"
-)
+# --- تنظیمات صفحه ---
+st.set_page_config(page_title="Jamshid Panel", page_icon="👑", layout="wide")
 
-# --- 2. اتصال قدرتمند به گوگل شیت ---
+# --- اتصال به دیتابیس (نسخه ضد گلوله) ---
 @st.cache_resource
-def get_db():
-    # خواندن اطلاعات از Secrets
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    
-    # >>> فوت کوزه‌گری: اصلاح فرمت کلید خصوصی <<<
-    # این خط مشکل شما را حل می‌کند
-    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+def connect_to_db():
+    try:
+        # دریافت اطلاعات از تنظیمات مخفی
+        credentials = dict(st.secrets["gcp_service_account"])
+        
+        # این خط جادویی، مشکل فرمت کلید را حل می‌کند
+        credentials["private_key"] = credentials["private_key"].replace("\\n", "\n")
 
-    # تعریف سطح دسترسی
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    
-    # ساخت اعتبارنامه با روش جدید گوگل
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    client = gspread.authorize(creds)
-    
-    return client.open("Command_Center")
+        # اتصال مستقیم و ساده
+        gc = gspread.service_account_from_dict(credentials)
+        return gc.open("Command_Center")
+        
+    except Exception as e:
+        st.error(f"❌ خطای اتصال: {e}")
+        st.info("راهنما: لطفا چک کنید اسم فایل گوگل شیت دقیقاً Command_Center باشد و ربات به آن دسترسی داشته باشد.")
+        st.stop()
 
-# تست اتصال
-try:
-    sh = get_db()
-    st.toast("اتصال برقرار شد! جمشید آماده است 👑", icon="✅")
-except Exception as e:
-    st.error(f"مشکل در اتصال: {e}")
-    st.stop()
+# --- شروع سیستم ---
+sh = connect_to_db()
+st.toast("جمشید متصل شد! 🚀", icon="✅")
 
-# --- 3. بدنه اصلی برنامه ---
 st.title("👑 اتاق فرمان جمشید")
 
-tab_news, tab_video, tab_future, tab_config = st.tabs([
-    "📰 اتاق خبر", "🎬 کارخانه ویدئو", "🔮 آینده‌پژوهی", "⚙️ تنظیمات"
-])
+# تب‌ها
+tab1, tab2 = st.tabs(["📰 اخبار", "⚙️ تنظیمات"])
 
-# --- تب ۱: اتاق خبر ---
-with tab_news:
-    st.header("مدیریت اخبار")
+with tab1:
+    st.header("لیست اخبار")
     try:
         ws = sh.worksheet("News_Feed")
-        df = pd.DataFrame(ws.get_all_records())
-        if not df.empty:
-            st.dataframe(df, use_container_width=True)
-        else:
-            st.info("هنوز خبری نیست.")
+        data = ws.get_all_records()
+        df = pd.DataFrame(data)
+        st.dataframe(df, use_container_width=True)
     except:
-        st.warning("تب News_Feed یافت نشد.")
+        st.warning("تب News_Feed در گوگل شیت پیدا نشد.")
 
-# --- تب ۲: کارخانه ویدئو ---
-with tab_video:
-    st.header("تولید محتوا")
-    url = st.text_input("لینک یوتیوب:")
-    if st.button("شروع پردازش"):
-        st.success("درخواست ثبت شد (شبیه‌سازی)")
-    
-    try:
-        ws_vid = sh.worksheet("Video_Factory")
-        st.dataframe(pd.DataFrame(ws_vid.get_all_records()))
-    except:
-        pass
-
-# --- تب ۳ و ۴ (ساده شده برای تست) ---
-with tab_future:
-    st.write("بخش آینده‌پژوهی")
-
-with tab_config:
-    st.write("تنظیمات")
+with tab2:
+    st.write("تنظیمات سیستم فعال است.")
