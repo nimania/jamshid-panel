@@ -28,15 +28,15 @@ def connect_to_db():
 
 sh = connect_to_db()
 
-# --- 2. توابع هوشمند (GPT & ElevenLabs) ---
+# --- 2. توابع هوشمند ---
 def generate_script_gpt(text, project_type):
     if not text: return "متنی وجود ندارد."
     try:
         client = OpenAI(api_key=st.secrets["openai"]["api_key"])
         if project_type == "پاورقی (سریال ترکی)":
-            system_msg = "تو یک نویسنده خلاق و داستان‌گو هستی. ماموریت: بر اساس توالی داستانی، متن ورودی را به سه قسمت تبدیل کن و برای هر کدام یک پاورقی بنویس و هر سه را در پیِ هم بنویس. لحن: جذاب و مناسب یوتیوب."
+            system_msg = "تو یک نویسنده خلاق هستی. متن زیرنویس را به یک سناریوی جذاب و داستان‌گو برای یوتیوب تبدیل کن. سه بخش متوالی."
         else:
-            system_msg = "تو یک تحلیلگر موشکاف هستی. ماموریت: یک ری‌کپ حرفه‌ای، دقیق و موشکافانه از گفته‌های این متن تهیه کن. لحن: جدی و تحلیلی."
+            system_msg = "تو یک تحلیلگر هستی. جان کلام متن زیر را استخراج کن."
 
         response = client.chat.completions.create(
             model="gpt-4o-mini", 
@@ -47,24 +47,19 @@ def generate_script_gpt(text, project_type):
     except Exception as e: return f"خطای OpenAI: {e}"
 
 def get_elevenlabs_voices():
-    """دریافت لیست صداها از اکانت شما"""
     try:
         url = "https://api.elevenlabs.io/v1/voices"
         headers = {"xi-api-key": st.secrets["elevenlabs"]["api_key"]}
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
-            voices = response.json()['voices']
-            # تبدیل به دیکشنری {نام: آیدی}
-            return {v['name']: v['voice_id'] for v in voices}
+            return {v['name']: v['voice_id'] for v in response.json()['voices']}
         return {}
     except: return {}
 
 def generate_audio(text, voice_id):
-    """تولید صدا و بازگرداندن فایل"""
     try:
-        # محدودیت کاراکتر برای جلوگیری از ارور (تست روی 1000 کاراکتر اول)
-        # در نسخه نهایی باید متن را تکه تکه کنیم
-        safe_text = text[:4000] 
+        # برای تست اولیه، فقط ۱۰۰۰ کاراکتر اول را می‌فرستیم تا اگر متن طولانی بود ارور ندهد
+        safe_text = text[:1000] 
         
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         headers = {
@@ -73,15 +68,17 @@ def generate_audio(text, voice_id):
         }
         data = {
             "text": safe_text,
-            "model_id": "eleven_multilingual_v2", # مدل عالی برای فارسی
+            "model_id": "eleven_multilingual_v2",
             "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
         }
         response = requests.post(url, json=data, headers=headers)
+        
         if response.status_code == 200:
-            return response.content
+            return response.content, None
         else:
-            return None
-    except: return None
+            # برگرداندن متن دقیق خطا برای عیب‌یابی
+            return None, response.text
+    except Exception as e: return None, str(e)
 
 # --- 3. توابع کمکی ---
 def fetch_rss_feed(rss_url):
@@ -128,35 +125,41 @@ with tab_video:
         with col2:
             p_name = st.text_input("نام پروژه:")
             p_type = st.selectbox("نوع:", ["پاورقی (سریال ترکی)", "جان کلام (تحلیلی)"])
-            # دریافت لیست صداها از ElevenLabs
+            
+            # دریافت لیست صداها
             voice_dict = get_elevenlabs_voices()
-            voice_name = st.selectbox("انتخاب صدا:", list(voice_dict.keys()) if voice_dict else ["پیش‌فرض"])
-        
+            voice_options = list(voice_dict.keys())
+            
+            # انتخاب‌گر صدا با قابلیت جستجو
+            selected_voice_name = st.selectbox("انتخاب صدا از لیست:", ["انتخاب کنید..."] + voice_options)
+            
+            # کادر برای آیدی دستی (اگر در لیست نبود)
+            manual_voice_id = st.text_input("یا Voice ID را دستی وارد کنید (اگر در لیست نیست):")
+
         if st.form_submit_button("ثبت"):
             sub_text = manual if manual else (download_transcript_heavy(v_url) if v_url else "")
-            voice_id_to_save = voice_dict.get(voice_name, "") if voice_dict else ""
+            
+            # اولویت با آیدی دستی است، بعد لیست
+            final_voice_id = manual_voice_id if manual_voice_id else voice_dict.get(selected_voice_name, "")
             
             if sub_text:
                 final_name = p_name if p_name.strip() else f"پروژه {datetime.now().strftime('%H:%M:%S')}"
-                sh.worksheet("Video_Factory").append_row([final_name, v_url, sub_text, "", voice_id_to_save, "Ready for AI", ""])
-                st.success("ثبت شد!")
+                sh.worksheet("Video_Factory").append_row([final_name, v_url, sub_text, "", final_voice_id, "Ready for AI", ""])
+                st.success(f"ثبت شد! (Voice ID: {final_voice_id})")
                 st.rerun()
             else: st.error("متن یا لینک معتبر وارد کنید.")
 
     st.divider()
-    st.header("۲. اتاق نویسندگان و استودیو صدا 🎙️")
+    st.header("۲. استودیو تولید (متن و صدا)")
     
     try:
         ws_vid = sh.worksheet("Video_Factory")
         df_vid = pd.DataFrame(ws_vid.get_all_records())
         
         if not df_vid.empty:
-            pending = df_vid.reset_index() # نمایش همه پروژه‌ها
-            
+            pending = df_vid.reset_index()
             def get_label(x):
-                name = str(pending.loc[x, 'Project_Name']).strip()
-                status = str(pending.loc[x, 'Status'])
-                return f"{name} | وضعیت: {status}"
+                return f"{pending.loc[x, 'Project_Name']} | {pending.loc[x, 'Status']}"
 
             sel_idx = st.selectbox("انتخاب پروژه:", pending.index, format_func=get_label)
             sel_row = pending.loc[sel_idx]
@@ -164,9 +167,9 @@ with tab_video:
             col_a, col_b = st.columns(2)
             
             with col_a:
-                st.subheader("گام اول: نوشتن سناریو")
-                override_type = st.radio("سبک نوشتن:", ["پاورقی (سریال ترکی)", "جان کلام (تحلیلی)"], horizontal=True)
-                if st.button("✨ نوشتن سناریو (GPT)"):
+                st.subheader("نوشتن سناریو")
+                override_type = st.radio("سبک:", ["پاورقی (سریال ترکی)", "جان کلام"], horizontal=True)
+                if st.button("✨ نوشتن (GPT)"):
                     with st.spinner("نوشتن..."):
                         res = generate_script_gpt(sel_row['Subtitle_Text'], override_type)
                         if "خطا" not in res:
@@ -178,27 +181,27 @@ with tab_video:
                         else: st.error(res)
             
             with col_b:
-                st.subheader("گام دوم: تولید صدا")
-                # اگر سناریو آماده بود، دکمه صدا را فعال کن
+                st.subheader("تولید صدا")
                 script_content = sel_row['Script']
                 saved_voice_id = sel_row['Voice_ID']
                 
+                st.caption(f"Voice ID استفاده شده: {saved_voice_id}")
+                
                 if script_content:
-                    st.text_area("متن آماده صداگذاری:", script_content, height=150)
-                    if st.button("🎙️ تبدیل به صدا (ElevenLabs)"):
+                    if st.button("🎙️ تست تولید صدا (۱۰۰۰ حرف اول)"):
                         if not saved_voice_id:
-                            st.error("آیدی صدا پیدا نشد. لطفا پروژه را با صدای مشخص ثبت کنید.")
+                            st.error("آیدی صدا نداریم. دستی وارد کنید یا پروژه را ویرایش کنید.")
                         else:
-                            with st.spinner("در حال ضبط صدا..."):
-                                audio_bytes = generate_audio(script_content, saved_voice_id)
+                            with st.spinner("ارسال به ElevenLabs..."):
+                                audio_bytes, error_msg = generate_audio(script_content, saved_voice_id)
                                 if audio_bytes:
                                     st.audio(audio_bytes, format='audio/mp3')
-                                    st.success("صدا تولید شد! می‌توانید دانلود کنید (سه نقطه روی پلیر).")
+                                    st.success("صدا با موفقیت تولید شد! ✅")
                                 else:
-                                    st.error("خطا در تولید صدا (شاید اعتبار تمام شده یا متن خیلی طولانی است).")
+                                    st.error("خطا از طرف ElevenLabs:")
+                                    st.code(error_msg) # نمایش دقیق متن خطا
                 else:
-                    st.info("اول باید سناریو نوشته شود.")
-
+                    st.info("اول سناریو را بنویسید.")
         st.dataframe(df_vid, use_container_width=True)
     except Exception as e: st.write(f"وضعیت: {e}")
 
