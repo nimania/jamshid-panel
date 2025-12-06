@@ -15,9 +15,9 @@ import random
 import time
 from bs4 import BeautifulSoup
 import re
-
-# غیرفعال کردن اخطارهای امنیتی SSL برای سایت‌های ایرانی
+from urllib.parse import urlparse
 import urllib3
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- تنظیمات ---
@@ -119,12 +119,10 @@ def get_elevenlabs_voices():
 # --- توابع شکارچی منبع ---
 def find_rss_link(url):
     try:
-        r = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}, verify=False)
+        r = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
         soup = BeautifulSoup(r.text, 'html.parser')
         rss_link = soup.find('link', type='application/rss+xml')
         if rss_link: return rss_link.get('href')
-        atom_link = soup.find('link', type='application/atom+xml')
-        if atom_link: return atom_link.get('href')
     except: pass
     return None
 
@@ -145,7 +143,6 @@ def detect_and_add_source(url, name):
     final_value = clean_url
     message = ""
 
-    # RSS مستقیم
     is_direct_rss = False
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -178,9 +175,8 @@ def detect_and_add_source(url, name):
         rss = find_rss_link(clean_url)
         if rss:
             source_type = "RSS"
-            # هندل کردن لینک‌های نسبی (مثلاً /feed)
+            # هندل کردن لینک‌های نسبی
             if rss.startswith("/"):
-                # حذف اسلش آخر دامنه برای جلوگیری از دوتایی شدن
                 base = clean_url.rstrip('/')
                 final_value = f"{base}{rss}"
             else:
@@ -192,10 +188,10 @@ def detect_and_add_source(url, name):
     sh.worksheet("Config").append_row([source_type, name, final_value, ""])
     return message
 
-# --- توابع خبرخوان (قدرتمند و ضد فیلتر) ---
+# --- توابع خبرخوان (شاه‌کلید گوگل) ---
 def fetch_website_meta(url):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(url, headers=headers, timeout=10, verify=False)
         soup = BeautifulSoup(r.text, 'html.parser')
         title = soup.title.string if soup.title else url
@@ -218,43 +214,54 @@ def scrape_telegram_channel(url):
     except: return []
 
 def fetch_rss_feed(rss_url):
-    """خبرخوان ۳ مرحله‌ای (واسطه -> مستقیم -> هدر جعلی)"""
+    """خبرخوان ۳ مرحله‌ای (مستقیم -> واسطه -> گوگل نیوز)"""
     items = []
     
-    # 1. اولویت اول: استفاده از سرویس واسط RSS2JSON (برای دور زدن فیلتر IP)
-    # این روش برای دیجیاتو و سایت‌های ایرانی عالی کار می‌کند
+    # 1. تلاش مستقیم
     try:
-        proxy_api = f"https://api.rss2json.com/v1/api.json?rss_url={rss_url}"
-        r = requests.get(proxy_api, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            if data['status'] == 'ok':
-                feed_title = data['feed'].get('title', 'Unknown')
-                for item in data['items'][:5]:
-                    pub = item.get('pubDate', datetime.now().strftime("%Y-%m-%d %H:%M"))
-                    items.append([pub, feed_title, item.get('title'), item.get('link'), "New"])
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(rss_url, headers=headers, timeout=8, verify=False)
+        if response.status_code == 200:
+            feed = feedparser.parse(response.content)
+            if len(feed.entries) > 0:
+                for entry in feed.entries[:5]:
+                    pub = entry.get('published', datetime.now().strftime("%Y-%m-%d %H:%M"))[:20]
+                    items.append([pub, feed.feed.get('title', 'Unknown'), entry.title, entry.link, "New"])
                 return items
     except: pass
 
-    # 2. اولویت دوم: مستقیم با هدر کروم (اگر اولی نشد)
+    # 2. تلاش با RSS2JSON Proxy
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'application/rss+xml, application/xml, text/xml, */*'
-        }
-        # verify=False برای نادیده گرفتن خطای SSL سایت‌های ایرانی
-        response = requests.get(rss_url, headers=headers, timeout=10, verify=False)
-        feed = feedparser.parse(response.content)
+        proxy = f"https://api.rss2json.com/v1/api.json?rss_url={rss_url}"
+        r = requests.get(proxy, timeout=8)
+        if r.status_code == 200:
+            d = r.json()
+            if d['status'] == 'ok':
+                for e in d['items'][:5]:
+                    items.append([e.get('pubDate'), d['feed'].get('title'), e.get('title'), e.get('link'), "New"])
+                return items
+    except: pass
+
+    # 3. شاه‌کلید: استفاده از Google News به عنوان پروکسی
+    # اگر لینک سایت است و RSS نیست، یا RSS کار نکرد، از گوگل بپرس
+    try:
+        # استخراج دامنه (مثلا digiato.com)
+        domain = urlparse(rss_url).netloc.replace('www.', '')
+        if not domain: domain = rss_url # اگر دامنه خالی بود خود ورودی را بگیر
+        
+        # ساخت فید گوگل برای این دامنه
+        google_rss = f"https://news.google.com/rss/search?q=site:{domain}&hl=fa-IR&gl=IR&ceid=IR:fa"
+        
+        r = requests.get(google_rss, timeout=10)
+        feed = feedparser.parse(r.content)
         
         if len(feed.entries) > 0:
             for entry in feed.entries[:5]:
-                pub_date = datetime.now().strftime("%Y-%m-%d %H:%M")
-                if 'published' in entry: pub_date = entry.published[:20]
                 items.append([
-                    pub_date,
-                    feed.feed.get('title', 'Unknown'),
-                    entry.get('title', 'No Title'),
-                    entry.get('link', ''),
+                    entry.get('published', datetime.now().strftime("%Y-%m-%d %H:%M"))[:20],
+                    f"{domain} (Via Google)",
+                    entry.title,
+                    entry.link,
                     "New"
                 ])
             return items
@@ -301,40 +308,36 @@ if st.session_state.active_step == "News Room":
                 configs = ws_conf.get_all_records()
                 bar = st.progress(0, "شروع...")
                 
-                new_count = 0
-                dup_count = 0
-                total = len(configs) if configs else 1
-
+                new_cnt = 0
+                dup_cnt = 0
+                
                 for i, item in enumerate(configs):
-                    src_name = item.get('Name', 'Unknown')
-                    src_type = item.get('Type', '')
-                    src_val = item.get('Value', '')
+                    name = item.get('Name', 'Unknown')
+                    val = item.get('Value', '')
+                    typ = item.get('Type', '')
+                    bar.progress((i+1)/len(configs), f"چک کردن: {name}")
                     
-                    bar.progress((i+1)/total, f"چک کردن: {src_name}")
-                    
-                    fetched_items = []
+                    fetched = []
                     try:
-                        if src_type in ['RSS', 'Youtube_Channel'] and src_val:
-                            fetched_items = fetch_rss_feed(src_val)
-                        elif src_type == 'Telegram' and src_val:
-                            fetched_items = scrape_telegram_channel(src_val)
-                        elif src_type == 'Website' and src_val:
-                            fetched_items = fetch_website_meta(src_val)
+                        if typ in ['RSS', 'Youtube_Channel', 'Website'] and val:
+                            # حتی اگر تایپ وبسایت بود، بفرست به fetch_rss_feed که از گوگل نیوز استفاده کنه
+                            fetched = fetch_rss_feed(val)
+                        elif typ == 'Telegram' and val:
+                            fetched = scrape_telegram_channel(val)
                     except: pass
                     
-                    for news in fetched_items:
+                    for news in fetched:
                         if len(news) > 3:
-                            link = news[3]
-                            if link not in existing_links:
+                            if news[3] not in existing_links:
                                 temp_list.append(news)
-                                existing_links.add(link)
-                                new_count += 1
-                            else: dup_count += 1
+                                existing_links.add(news[3])
+                                new_cnt += 1
+                            else: dup_cnt += 1
 
                 bar.empty()
                 st.session_state.temp_news = temp_list
-                if new_count > 0: st.success(f"{new_count} خبر جدید پیدا شد! ({dup_count} تکراری حذف شد)")
-                else: st.info(f"خبر جدیدی نیست. ({dup_count} مورد تکراری یافت شد)")
+                if new_cnt > 0: st.success(f"{new_cnt} خبر جدید! ({dup_cnt} تکراری)")
+                else: st.info(f"خبر جدیدی نیست. ({dup_cnt} تکراری)")
 
         if st.session_state.temp_news:
             st.write("### اخبار جدید (تایید کنید)")
@@ -347,7 +350,7 @@ if st.session_state.active_step == "News Room":
                     st.session_state.temp_news = []
                     st.success("ذخیره شد!"); time.sleep(1); go_to("Scenario Studio")
         else:
-            with st.expander("مشاهده آرشیو اخبار قبلی"):
+            with st.expander("آرشیو اخبار"):
                 try: st.dataframe(pd.DataFrame(sh.worksheet("News_Feed").get_all_records()))
                 except: pass
 
