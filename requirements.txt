@@ -11,3 +11,4 @@ imageio-ffmpeg
 opencv-python-headless
 numpy
 beautifulsoup4
+lxml
