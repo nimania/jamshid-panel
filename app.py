@@ -27,20 +27,31 @@ def connect_to_db():
 
 sh = connect_to_db()
 
-# --- 2. تابع نویسنده (ChatGPT) ---
+# --- 2. تابع نویسنده (با پرامت‌های اختصاصی شما) ---
 def generate_script_gpt(text, project_type):
     if not text: return "متنی وجود ندارد."
     
     try:
         client = OpenAI(api_key=st.secrets["openai"]["api_key"])
         
+        # >>> اینجا پرامت‌ها را طبق دستور شما تغییر دادیم <<<
         if project_type == "پاورقی (سریال ترکی)":
-            system_msg = "تو یک نویسنده خلاق یوتیوب هستی. متن زیرنویس را به یک سناریوی فارسی جذاب، داستان‌گو و صمیمی (Storytelling) تبدیل کن. ساختار: مقدمه (قلاب)، بدنه داستان (۳ اتفاق مهم)، پایان‌بندی."
+            # دستور اختصاصی سریال
+            system_msg = """
+            تو یک نویسنده خلاق و داستان‌گو هستی.
+            ماموریت: بر اساس توالی داستانی، متن ورودی را به سه قسمت تبدیل کن و برای هر کدام یک پاورقی بنویس و هر سه را در پیِ هم بنویس.
+            لحن: جذاب و مناسب یوتیوب.
+            """
         else:
-            system_msg = "تو یک تحلیلگر سیاسی استراتژیک هستی. جان کلام متن زیر را استخراج کن: خلاصه مدیریتی، ۳ نکته کلیدی، نتیجه‌گیری و پیش‌بینی آینده."
+            # دستور اختصاصی جان کلام
+            system_msg = """
+            تو یک تحلیلگر موشکاف هستی.
+            ماموریت: یک ری‌کپ حرفه‌ای، دقیق و موشکافانه از گفته‌های این متن تهیه کن.
+            لحن: جدی و تحلیلی.
+            """
 
         response = client.chat.completions.create(
-            model="gpt-4o-mini", # مدل سریع و ارزان (یا gpt-3.5-turbo)
+            model="gpt-4o-mini", 
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": f"متن ورودی:\n{text[:15000]}"}
@@ -69,7 +80,7 @@ def download_transcript_heavy(url):
     except: return None
 
 # --- 4. رابط کاربری ---
-st.title("👑 اتاق فرمان جمشید (موتور OpenAI)")
+st.title("👑 اتاق فرمان جمشید")
 tab_news, tab_video, tab_config = st.tabs(["📰 اتاق خبر", "🎬 کارخانه ویدئو", "⚙️ تنظیمات"])
 
 with tab_news:
@@ -115,28 +126,35 @@ with tab_video:
         df_vid = pd.DataFrame(ws_vid.get_all_records())
         
         if not df_vid.empty:
-            # فیلتر کردن پروژه‌های ناتمام
             pending = df_vid[df_vid['Script'] == ""].reset_index()
             
             if not pending.empty:
-                # اصلاح باگ نمایش سفید: اگر اسم خالی بود، یک اسم موقت نشان بده
+                # تابع کمکی برای نمایش نام در لیست کشویی
                 def get_label(x):
                     name = str(pending.loc[x, 'Project_Name']).strip()
-                    return name if name else f"پروژه بدون نام (ردیف {x+1})"
+                    row_type = str(pending.loc[x, 'Subtitle_Text'])[:20] # نمایش بخشی از متن برای تشخیص
+                    return f"{name} (ردیف {x+2})" if name else f"پروژه بدون نام (ردیف {x+2})"
 
                 sel_idx = st.selectbox("انتخاب پروژه:", pending.index, format_func=get_label)
                 sel_row = pending.loc[sel_idx]
                 
+                # نمایش نوع انتخابی برای اطمینان کاربر
+                # نکته: ما نوع پروژه (جان کلام/پاورقی) را در شیت ذخیره نکرده بودیم. 
+                # برای حل این، کاربر الان انتخاب می‌کند که با کدام پرامت اجرا شود.
+                
+                st.info(f"پروژه انتخابی: {sel_row['Project_Name']}")
+                override_type = st.radio("با چه سبکی نوشته شود؟", ["پاورقی (سریال ترکی)", "جان کلام (تحلیلی)"], horizontal=True)
+                
                 if st.button("✨ نوشتن سناریو"):
-                    with st.spinner("ChatGPT در حال نوشتن..."):
-                        res = generate_script_gpt(sel_row['Subtitle_Text'], "پاورقی (سریال ترکی)")
+                    with st.spinner("جمشید در حال نوشتن..."):
+                        res = generate_script_gpt(sel_row['Subtitle_Text'], override_type)
                         
                         if "خطا" not in res:
                             cell = ws_vid.find(sel_row['Project_Name'])
                             ws_vid.update_cell(cell.row, 4, res)
                             ws_vid.update_cell(cell.row, 6, "Script Done")
                             st.success("تمام شد!")
-                            st.text_area("خروجی:", res, height=300)
+                            st.text_area("خروجی نهایی:", res, height=400)
                             st.rerun()
                         else: st.error(res)
             else: st.info("پروژه جدیدی برای نوشتن نیست.")
