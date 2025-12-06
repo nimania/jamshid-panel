@@ -5,3 +5,6 @@ pandas
 feedparser
 yt-dlp
 openai
+requests
+moviepy
+imageio-ffmpeg
