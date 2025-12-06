@@ -180,14 +180,23 @@ def detect_and_add_source(url, name):
     sh.worksheet("Config").append_row([source_type, name, final_value, ""])
     return message
 
-# --- توابع خبرخوان (با هدرهای قوی) ---
+# --- توابع خبرخوان (با پروکسی هوشمند) ---
 def fetch_website_meta(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         r = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(r.text, 'html.parser')
         title = soup.title.string if soup.title else url
-        return [[datetime.now().strftime("%Y-%m-%d %H:%M"), "Website", title, url, "New"]]
+        # اگر سایت خبری بود، لینک‌های داخلش را هم بگیریم
+        links = []
+        for a in soup.find_all('a', href=True):
+            if len(a.text) > 20: # احتمالا تیتر خبر است
+                full_link = a['href'] if a['href'].startswith('http') else url.rstrip('/') + a['href']
+                links.append([datetime.now().strftime("%Y-%m-%d %H:%M"), "Website", a.text.strip(), full_link, "New"])
+                if len(links) >= 5: break
+        if not links:
+            return [[datetime.now().strftime("%Y-%m-%d %H:%M"), "Website", title, url, "New"]]
+        return links
     except: return []
 
 def scrape_telegram_channel(url):
@@ -206,27 +215,46 @@ def scrape_telegram_channel(url):
     except: return []
 
 def fetch_rss_feed(rss_url):
+    """خبرخوان ۳ مرحله‌ای (مستقیم -> پروکسی -> خطا)"""
+    items = []
+    
+    # روش ۱: مستقیم با هدر مرورگر
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept': 'application/rss+xml, application/xml, text/xml, */*'
         }
         response = requests.get(rss_url, headers=headers, timeout=10)
-        feed = feedparser.parse(response.content)
-        
-        items = []
-        for entry in feed.entries[:5]:
-            pub_date = datetime.now().strftime("%Y-%m-%d %H:%M")
-            if 'published' in entry: pub_date = entry.published[:20]
-            items.append([
-                pub_date,
-                feed.feed.get('title', 'Unknown'),
-                entry.get('title', 'No Title'),
-                entry.get('link', ''),
-                "New"
-            ])
-        return items
-    except: return []
+        if response.status_code == 200:
+            feed = feedparser.parse(response.content)
+            if len(feed.entries) > 0:
+                for entry in feed.entries[:5]:
+                    pub_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    if 'published' in entry: pub_date = entry.published[:20]
+                    items.append([pub_date, feed.feed.get('title', 'Unknown'), entry.get('title', 'No Title'), entry.get('link', ''), "New"])
+                return items
+    except: pass
+
+    # روش ۲: استفاده از پروکسی RSS2JSON (برای دور زدن تحریم)
+    try:
+        # این سرویس واسط، فید را می‌گیرد و به JSON تبدیل می‌کند
+        proxy_url = f"https://api.rss2json.com/v1/api.json?rss_url={rss_url}"
+        r = requests.get(proxy_url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if 'items' in data:
+                for entry in data['items'][:5]:
+                    items.append([
+                        entry.get('pubDate', datetime.now().strftime("%Y-%m-%d %H:%M")),
+                        data.get('feed', {}).get('title', 'Unknown'),
+                        entry.get('title', 'No Title'),
+                        entry.get('link', ''),
+                        "New"
+                    ])
+                return items
+    except: pass
+
+    return []
 
 def download_transcript_heavy(url):
     try:
@@ -258,14 +286,10 @@ if st.session_state.active_step == "News Room":
                 ws_conf = sh.worksheet("Config")
                 ws_news = sh.worksheet("News_Feed")
                 
-                # خواندن لینک‌های قدیمی
                 try:
-                    # استفاده از روش امن‌تر برای گرفتن ستون لینک (معمولا ستون D یا 4)
                     existing_data = ws_news.get_all_values()
-                    # فرض می‌کنیم ردیف اول هدر است و ستون 4 لینک است (index 3)
                     existing_links = set([row[3] for row in existing_data[1:] if len(row) > 3])
-                except:
-                    existing_links = set()
+                except: existing_links = set()
                 
                 temp_list = []
                 configs = ws_conf.get_all_records()
@@ -273,13 +297,10 @@ if st.session_state.active_step == "News Room":
                 
                 new_count = 0
                 dup_count = 0
-                
-                total = len(configs)
-                if total == 0: total = 1 # جلوگیری از تقسیم بر صفر
+                total = len(configs) if configs else 1
 
                 for i, item in enumerate(configs):
-                    # >>> اصلاح مهم: استفاده از .get برای جلوگیری از KeyError <<<
-                    src_name = item.get('Name', 'منبع ناشناس')
+                    src_name = item.get('Name', 'Unknown')
                     src_type = item.get('Type', '')
                     src_val = item.get('Value', '')
                     
@@ -296,23 +317,18 @@ if st.session_state.active_step == "News Room":
                     except: pass
                     
                     for news in fetched_items:
-                        # بررسی ایمن وجود لینک
                         if len(news) > 3:
                             link = news[3]
                             if link not in existing_links:
                                 temp_list.append(news)
                                 existing_links.add(link)
                                 new_count += 1
-                            else:
-                                dup_count += 1
+                            else: dup_count += 1
 
                 bar.empty()
                 st.session_state.temp_news = temp_list
-                
-                if new_count > 0:
-                    st.success(f"{new_count} خبر جدید پیدا شد! ({dup_count} تکراری حذف شد)")
-                else:
-                    st.info(f"خبر جدیدی نیست. ({dup_count} مورد تکراری یافت شد)")
+                if new_count > 0: st.success(f"{new_count} خبر جدید پیدا شد! ({dup_count} تکراری حذف شد)")
+                else: st.info(f"خبر جدیدی نیست. ({dup_count} مورد تکراری یافت شد)")
 
         if st.session_state.temp_news:
             st.write("### اخبار جدید (تایید کنید)")
@@ -386,11 +402,7 @@ elif st.session_state.active_step == "Scenario Studio":
 # ----------------- 3. Sound Factory -----------------
 elif st.session_state.active_step == "Sound Factory":
     st.header("🎙️ کارخانه صدا")
-    model_options = {
-        "Eleven V3 / Turbo v2.5": "eleven_turbo_v2_5",
-        "Multilingual v2": "eleven_multilingual_v2",
-        "Flash v2.5": "eleven_flash_v2_5"
-    }
+    model_options = {"Eleven V3 / Turbo v2.5": "eleven_turbo_v2_5", "Multilingual v2": "eleven_multilingual_v2", "Flash v2.5": "eleven_flash_v2_5"}
     selected_model_label = st.selectbox("انتخاب موتور:", list(model_options.keys()))
     selected_model_id = model_options[selected_model_label]
     
